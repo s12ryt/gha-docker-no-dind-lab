@@ -31,7 +31,9 @@ RUN curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDC
 # 容器內最穩的 storage driver (不依賴 overlay 上層或 /dev/fuse)
 # runroot/graphroot 必須明寫: 覆蓋預設 storage.conf 後 buildah 會報 "runroot must be set"
 # (rootless 用戶執行時,podman/buildah 會自動重定位到 $HOME 與 $XDG_RUNTIME_DIR,不受此設定影響)
-RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' > /etc/containers/storage.conf
+# ignore_chown_errors: 單映射模式 (無 subuid) 下鏡像層內其他 uid/gid (如 gid 42)
+# 無法 chown 會炸 "lchown invalid argument" — 這是無 subuid 環境的官方解法 (HPC/無 root 場景)
+RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
 
 # rootless 專用非 root 帳號
 # 刻意「不」設定 subuid/subgid: 實測 GHA 容器內 setuid newuidmap 寫多行映射

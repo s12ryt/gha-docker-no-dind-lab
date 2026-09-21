@@ -92,8 +92,8 @@ jobs:
           cp -r /src /tmp/work/hello && chown -R toolbox:toolbox /tmp/work/hello
           su toolbox -c '
             export XDG_RUNTIME_DIR=/run/user/1000
-            podman build -t hello-podman-in-toolbox /tmp/work/hello
-            podman run --rm hello-podman-in-toolbox
+            podman build -t localhost/hello-podman-in-toolbox /tmp/work/hello
+            podman run --rm localhost/hello-podman-in-toolbox
           ' | tee /tmp/work/out.txt
           grep -q "without Docker-in-Docker" /tmp/work/out.txt
           echo "podman rootless 容器內 build+run 通過"
