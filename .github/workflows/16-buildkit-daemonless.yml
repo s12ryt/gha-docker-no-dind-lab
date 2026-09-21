@@ -11,7 +11,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 安裝 BuildKit (buildctl + buildkitd)
+      - name: 安裝 BuildKit (buildctl + buildkitd) 與 rootless 工具
         run: |
           VER="$(curl -fsSL https://api.github.com/repos/moby/buildkit/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
           echo "BuildKit 版本: $VER"
@@ -19,23 +19,32 @@ jobs:
           sudo tar -xzf /tmp/buildkit.tgz -C /usr/local
           buildctl --version
           buildkitd --version
+          # BuildKit tarball 不含 rootlesskit/slirp4netns,從 apt 補齊
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rootlesskit slirp4netns >/dev/null
+          command -v rootlesskit
+          command -v slirp4netns
 
       - name: 解除 AppArmor 對 unprivileged userns 的限制 (Ubuntu 24.04)
         run: |
           # 同 08: runner 的 kernel.apparmor_restrict_unprivileged_userns=1
           # 會擋 rootlesskit 與 buildkitd,為兩者寫 unconfined+userns profile
-          for BIN in rootlesskit buildkitd; do
-            cat <<EOT | sudo tee "/etc/apparmor.d/usr.local.bin.$BIN" >/dev/null
+          # rootlesskit 來自 apt (/usr/bin),buildkitd 來自 release tarball (/usr/local/bin)
+          write_profile() {
+            BIN_PATH="$1"; PROFILE_NAME="$2"
+            cat <<EOT | sudo tee "/etc/apparmor.d/$PROFILE_NAME" >/dev/null
           abi <abi/4.0>,
           include <tunables/global>
 
-          /usr/local/bin/$BIN flags=(unconfined) {
+          $BIN_PATH flags=(unconfined) {
             userns,
 
-            include if exists <local/usr.local.bin.$BIN>
+            include if exists <local/$PROFILE_NAME>
           }
           EOT
-          done
+          }
+          write_profile /usr/bin/rootlesskit usr.bin.rootlesskit
+          write_profile /usr/local/bin/buildkitd usr.local.bin.buildkitd
           sudo systemctl restart apparmor.service 2>/dev/null || sudo apparmor_parser -r -T /etc/apparmor.d || true
           echo "apparmor profiles 已套用"
 
