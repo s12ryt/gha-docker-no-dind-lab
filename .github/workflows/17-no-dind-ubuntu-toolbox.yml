@@ -29,7 +29,11 @@ jobs:
 
       - name: 測試 1 — DooD (容器內 docker CLI 掛 host socket 建 sibling)
         run: |
+          # host 的 socket 屬 root:docker 群組;容器內非 root 帳號要動態加入該 GID 才連得上
+          SOCK_GID="$(stat -c %g /var/run/docker.sock)"
+          echo "socket GID = $SOCK_GID (動態 group-add,維持非 root 執行)"
           docker run --rm \
+            --group-add "$SOCK_GID" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD/samples/hello:/src:ro" -w /src \
             no-dind-ubuntu:local docker build -t hello-dood-in-toolbox .
