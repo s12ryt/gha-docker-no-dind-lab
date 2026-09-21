@@ -1,0 +1,170 @@
+name: 17 No-DinD Ubuntu Toolbox
+
+on:
+  workflow_dispatch:
+
+jobs:
+  toolbox:
+    name: 自製 no-dind ubuntu 工具箱 — 容器內完整 no-dind 實測
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 建構工具箱 image (用 host daemon,非 dind)
+        run: |
+          docker build -t no-dind-ubuntu:local images/no-dind-ubuntu
+          docker images no-dind-ubuntu:local
+
+      - name: Smoke — 工具鏈完整性 (以 image 預設非 root 帳號執行)
+        run: |
+          docker run --rm no-dind-ubuntu:local bash -c '
+            for t in docker podman buildah skopeo nerdctl buildctl buildkitd rootlesskit slirp4netns; do
+              command -v "$t" >/dev/null || { echo "缺少: $t"; exit 1; }
+              printf "OK %-12s %s\n" "$t" "$(command -v $t)"
+            done
+            nerdctl --version
+            echo "Smoke 全數通過 (以 $(id -un) 身分)"
+          '
+
+      - name: 測試 1 — DooD (容器內 docker CLI 掛 host socket 建 sibling)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/samples/hello:/src:ro" -w /src \
+            no-dind-ubuntu:local docker build -t hello-dood-in-toolbox .
+          IMG="$(docker images -q hello-dood-in-toolbox)"
+          if [ -z "$IMG" ]; then echo "host daemon 看不到 image,DooD 失敗"; exit 1; fi
+          OUT="$(docker run --rm hello-dood-in-toolbox)"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+          echo "DooD 通過 — image 建在 host daemon (sibling),容器內只是 CLI"
+
+      - name: 測試 2 — skopeo daemonless (容器內,零 daemon)
+        run: |
+          docker run --rm no-dind-ubuntu:local bash -c '
+            set -e
+            skopeo copy docker://alpine:3.20 dir:/tmp/alpine
+            skopeo inspect dir:/tmp/alpine | grep -qi alpine
+            skopeo copy dir:/tmp/alpine docker-archive:/tmp/alpine.tar:alpine:3.20
+            ls -lh /tmp/alpine.tar
+            echo "skopeo daemonless 通過"
+          '
+
+      - name: 測試 3 — buildah (容器內 root,chroot isolation)
+        run: |
+          mkdir -p /tmp/buildah-out
+          docker run --rm --user root \
+            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/buildah-out:/out \
+            no-dind-ubuntu:local bash -c '
+            set -e
+            buildah bud --isolation chroot -t hello-in-toolbox /src
+            CTR="$(buildah from hello-in-toolbox)"
+            buildah run --isolation chroot "$CTR" /usr/local/bin/hello.sh | grep -q "without Docker-in-Docker"
+            buildah rm "$CTR"
+            buildah push hello-in-toolbox docker-archive:/out/hello.tar:hello-in-toolbox:latest
+            ls -lh /out/hello.tar
+            echo "buildah 容器內 build+run+匯出 通過"
+          '
+
+      - name: 解除 AppArmor userns 限制 + 準備 tun (供容器內 rootless)
+        run: |
+          sudo tee /etc/apparmor.d/no-dind-toolbox-userns >/dev/null <<'EOT'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile no-dind-toolbox-userns flags=(attach_disconnected,mediate_deleted,complain) {
+            userns,
+
+            include if exists <local/no-dind-toolbox-userns>
+          }
+          EOT
+          sudo apparmor_parser -r /etc/apparmor.d/no-dind-toolbox-userns 2>/dev/null \
+            || sudo systemctl restart apparmor 2>/dev/null || true
+          if [ ! -e /dev/net/tun ]; then sudo mknod /dev/net/tun c 10 200; fi
+          ls -l /dev/net/tun
+
+      - name: 測試 4 — podman rootless (容器內非 root user namespace)
+        run: |
+          cat > /tmp/podman-test.sh <<'EOT'
+          #!/bin/bash
+          set -e
+          mkdir -p /run/user/1000 /tmp/work
+          chown toolbox:toolbox /run/user/1000 /tmp/work
+          cp -r /src /tmp/work/hello && chown -R toolbox:toolbox /tmp/work/hello
+          su toolbox -c '
+            export XDG_RUNTIME_DIR=/run/user/1000
+            podman build -t hello-podman-in-toolbox /tmp/work/hello
+            podman run --rm hello-podman-in-toolbox
+          ' | tee /tmp/work/out.txt
+          grep -q "without Docker-in-Docker" /tmp/work/out.txt
+          echo "podman rootless 容器內 build+run 通過"
+          EOT
+          docker run --rm --user root \
+            --security-opt apparmor=no-dind-toolbox-userns \
+            --security-opt seccomp=unconfined \
+            --device /dev/fuse --device /dev/net/tun \
+            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/podman-test.sh:/test.sh:ro \
+            no-dind-ubuntu:local bash /test.sh
+
+      - name: 測試 5 — buildkit daemonless rootless (容器內一次性 buildkitd)
+        run: |
+          cat > /tmp/bk-test.sh <<'EOT'
+          #!/bin/bash
+          set -e
+          mkdir -p /run/user/1000 /tmp/bk
+          chown toolbox:toolbox /run/user/1000 /tmp/bk
+          cp -r /src /tmp/bk/hello && chown -R toolbox:toolbox /tmp/bk/hello
+          cat > /tmp/bk/run.sh <<'EOS'
+          #!/bin/bash
+          set -e
+          export XDG_RUNTIME_DIR=/run/user/1000
+          BK_ROOT="$XDG_RUNTIME_DIR/buildkit-in-toolbox"
+          BK_ADDR="unix://$BK_ROOT/buildkitd.sock"
+          mkdir -p "$BK_ROOT"
+          # 關鍵 (同 08/16): 絕不加 --copy-up=/run,socket 必須留在真實路徑
+          rootlesskit \
+            --state-dir="$XDG_RUNTIME_DIR/rootlesskit-bk" \
+            --net=slirp4netns \
+            --disable-host-loopback \
+            --copy-up=/etc \
+            buildkitd --root "$BK_ROOT" --addr "$BK_ADDR" --oci-worker-no-process-sandbox &
+          BKPID=$!
+          READY=0
+          for i in $(seq 1 30); do
+            if buildctl --addr "$BK_ADDR" debug workers >/dev/null 2>&1; then READY=1; break; fi
+            sleep 2
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "容器內 buildkitd 未就緒"; kill "$BKPID" 2>/dev/null || true; exit 1
+          fi
+          buildctl --addr "$BK_ADDR" build \
+            --frontend dockerfile.v0 \
+            --local context=/tmp/bk/hello \
+            --local dockerfile=/tmp/bk/hello \
+            --output type=oci,dest=/tmp/bk/out.tar
+          kill "$BKPID" 2>/dev/null || true
+          EOS
+          chown toolbox:toolbox /tmp/bk/run.sh
+          su toolbox -c 'bash /tmp/bk/run.sh'
+          skopeo inspect oci-archive:/tmp/bk/out.tar | grep -q "hello-no-dind"
+          echo "buildkit daemonless 容器內建構通過 (LABEL hello-no-dind 驗證)"
+          EOT
+          docker run --rm --user root \
+            --security-opt apparmor=no-dind-toolbox-userns \
+            --security-opt seccomp=unconfined \
+            --device /dev/fuse --device /dev/net/tun \
+            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/bk-test.sh:/test.sh:ro \
+            no-dind-ubuntu:local bash /test.sh
+
+      - name: 總結 — 工具箱覆蓋率
+        run: |
+          echo "no-dind-ubuntu 工具箱 容器內實測結果:"
+          echo "  [PASS] docker CLI (DooD 掛 host socket)"
+          echo "  [PASS] skopeo daemonless"
+          echo "  [PASS] buildah chroot"
+          echo "  [PASS] podman rootless"
+          echo "  [PASS] buildkit daemonless rootless"
+          echo "  [NOTE] nerdctl — binary 齊備 (smoke 已驗);完整 rootless containerd 需巢狀 cgroup 掛載,無特權容器內不可行 (已知邊界,詳 README)"
