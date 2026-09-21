@@ -58,24 +58,35 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           # buildkitd rootless 必須在 user namespace 內執行,用 rootlesskit 包一層
+          # 關鍵: 絕對不能加 --copy-up=/run!
+          #   copy-up 會在 namespace 私有 mount 掛 tmpfs 蓋住 /run,
+          #   socket 會建在 namespace 裡,host 端的 buildctl/nerdctl 全部看不到
+          #   (containerd-rootless.sh 之所以能用,就是因為 socket 在 host 真實路徑 $XDG_RUNTIME_DIR 下)
+          # $XDG_RUNTIME_DIR/buildkit-default/buildkitd.sock 正是 nerdctl rootless 預設的 BUILDKIT_HOST,
+          # 放這裡 nerdctl build 可零配置自動接上。
+          BK_ROOT="$XDG_RUNTIME_DIR/buildkit-default"
+          BK_ADDR="unix://$BK_ROOT/buildkitd.sock"
+          mkdir -p "$BK_ROOT"
           nohup rootlesskit \
             --state-dir="$XDG_RUNTIME_DIR/rootlesskit-buildkit" \
-            --net=slirp4netns --copy-up=/etc --copy-up=/run \
+            --net=slirp4netns \
+            --disable-host-loopback \
+            --copy-up=/etc \
             buildkitd \
-              --root "$XDG_RUNTIME_DIR/buildkit" \
-              --addr "unix:///run/buildkit/buildkitd.sock" \
+              --root "$BK_ROOT" \
+              --addr "$BK_ADDR" \
               --oci-worker-no-process-sandbox > /tmp/rootless-logs/buildkitd.log 2>&1 &
           for i in $(seq 1 25); do
-            if buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+            if buildctl --addr "$BK_ADDR" debug workers >/dev/null 2>&1; then
               echo "rootless buildkitd 就緒"; break
             fi
             sleep 2
           done
-          if ! buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+          if ! buildctl --addr "$BK_ADDR" debug workers >/dev/null 2>&1; then
             echo "buildkitd 未就緒,傾印日誌:"; cat /tmp/rootless-logs/buildkitd.log
             exit 1
           fi
-          buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers | head -3
+          buildctl --addr "$BK_ADDR" debug workers | head -3
 
       - name: nerdctl run (rootless)
         run: |
@@ -84,6 +95,8 @@ jobs:
 
       - name: nerdctl build (rootless)
         run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export BUILDKIT_HOST="unix://$XDG_RUNTIME_DIR/buildkit-default/buildkitd.sock"
           nerdctl build -t hello-rootless samples/hello
           OUT="$(nerdctl run --rm hello-rootless)"
           echo "輸出: $OUT"
