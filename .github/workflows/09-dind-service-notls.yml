@@ -42,12 +42,55 @@ jobs:
 
       - name: Build inside DinD
         run: |
-          export DOCKER_HOST=tcp://127.0.0.1:2375
-          docker build -t hello-dind samples/hello-dind
+          # 127.0.0.1:2375 goes through the host docker-proxy; the service
+          # container's bridge IP bypasses it. Probe both and use whichever
+          # survives a real build. If both fail, dump diagnostics.
+          CANDIDATES="tcp://127.0.0.1:2375"
+          DIND_CID=$(docker ps -aq --filter ancestor=docker:dind | head -n 1)
+          if [ -n "$DIND_CID" ]; then
+            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CID")
+            if [ -n "$DIND_IP" ]; then
+              CANDIDATES="$CANDIDATES tcp://$DIND_IP:2375"
+            fi
+          fi
+          echo "Candidate endpoints: $CANDIDATES"
+
+          BUILD_OK=0
+          for H in $CANDIDATES; do
+            echo "--- probing $H ---"
+            if docker -H "$H" version --format 'probe ok (server {{.Server.Version}})' >/dev/null 2>&1; then
+              echo "--- building via $H ---"
+              if docker -H "$H" build -t hello-dind samples/hello-dind; then
+                echo "DIND_HOST=$H" >> "$GITHUB_ENV"
+                echo "Build succeeded via $H"
+                BUILD_OK=1
+                break
+              fi
+              echo "build via $H failed"
+            else
+              echo "probe via $H failed"
+            fi
+          done
+
+          if [ "$BUILD_OK" != "1" ]; then
+            echo ""
+            echo "=== All endpoints failed - dumping diagnostics ==="
+            echo "--- docker ps -a ---"
+            docker ps -a
+            echo "--- dind container logs (last 80 lines) ---"
+            DIND_CID=$(docker ps -aq --filter ancestor=docker:dind | head -n 1)
+            if [ -n "$DIND_CID" ]; then
+              docker logs "$DIND_CID" 2>&1 | tail -n 80
+            else
+              echo "(no docker:dind container found)"
+            fi
+            exit 1
+          fi
 
       - name: Run inside DinD and verify isolation
         run: |
-          export DOCKER_HOST=tcp://127.0.0.1:2375
+          export DOCKER_HOST="$DIND_HOST"
+          echo "Using DOCKER_HOST=$DOCKER_HOST"
           OUT=$(docker run --rm hello-dind)
           echo "Output: $OUT"
           echo "$OUT" | grep -q "inside Docker-in-Docker"

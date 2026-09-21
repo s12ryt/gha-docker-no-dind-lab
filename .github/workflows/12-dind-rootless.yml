@@ -11,9 +11,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Load AppArmor profile permitting unprivileged userns
+        run: |
+          echo "=== Kernel userns / AppArmor state ==="
+          echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces)"
+          if [ -f /sys/module/apparmor/parameters/apparmor_restrict_unprivileged_userns ]; then
+            echo "apparmor_restrict_unprivileged_userns: $(cat /sys/module/apparmor/parameters/apparmor_restrict_unprivileged_userns)"
+          else
+            echo "apparmor_restrict_unprivileged_userns: (param not exposed)"
+          fi
+          echo ""
+          echo "=== Control: userns inside an unconfined container ==="
+          if docker run --rm --security-opt apparmor=unconfined --security-opt seccomp=unconfined alpine:3.20 unshare -Ur echo "userns works in unconfined container"; then
+            echo "-> unconfined is sufficient on this kernel"
+          else
+            echo "-> blocked: even unconfined containers cannot create userns here (Ubuntu 24.04 behavior)"
+          fi
+          echo ""
+          echo "=== Loading named AppArmor profile with explicit userns permission ==="
+          # Ubuntu 24.04 (kernel.apparmor_restrict_unprivileged_userns=1) blocks
+          # clone(CLONE_NEWUSER) even for unconfined processes unless a loaded
+          # AppArmor profile explicitly grants `userns,`. Container binaries
+          # cannot get a path-attached profile, but Docker CAN apply a named
+          # profile to the whole container via --security-opt apparmor=<name>.
+          sudo tee /etc/apparmor.d/dind-rootless-userns >/dev/null <<'PROFILE'
+          # Permissive profile + explicit userns permission for dind-rootless
+          profile dind-rootless-userns flags=(attach_disconnected,mediate_deleted) {
+            userns,
+            file,
+            capability,
+            network,
+            mount,
+            umount,
+            signal,
+            ptrace,
+            unix,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/dind-rootless-userns
+          echo "profile dind-rootless-userns loaded"
+
       - name: Start rootless DinD and wait for readiness
         run: |
-          OPTS="--security-opt apparmor=unconfined --security-opt seccomp=unconfined --security-opt systempaths=unconfined"
+          OPTS="--security-opt apparmor=dind-rootless-userns --security-opt seccomp=unconfined --security-opt systempaths=unconfined"
           if [ -e /dev/fuse ]; then
             OPTS="$OPTS --device /dev/fuse"
           fi
