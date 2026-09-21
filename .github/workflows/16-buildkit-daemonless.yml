@@ -15,7 +15,7 @@ jobs:
         run: |
           VER="$(curl -fsSL https://api.github.com/repos/moby/buildkit/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
           echo "BuildKit 版本: $VER"
-          curl -fsSL "https://github.com/moby/buildkit/releases/download/${VER}/buildkit-${VER}-linux-amd64.tar.gz" -o /tmp/buildkit.tgz
+          curl -fsSL "https://github.com/moby/buildkit/releases/download/${VER}/buildkit-${VER}.linux-amd64.tar.gz" -o /tmp/buildkit.tgz
           sudo tar -xzf /tmp/buildkit.tgz -C /usr/local
           buildctl --version
           buildkitd --version
