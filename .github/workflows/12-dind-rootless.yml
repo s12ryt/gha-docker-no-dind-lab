@@ -65,18 +65,26 @@ jobs:
           echo "Starting dind-rootless with: $OPTS"
           docker run -d --name dind-rootless $OPTS docker:dind-rootless
 
-          echo "Waiting for rootless dockerd (docker exec) ..."
+          echo "Waiting for rootless dockerd over TCP+TLS (rootlesskit port mapping) ..."
+          # NOTE: the image's rootlesskit runs with --copy-up=/run, so the
+          # unix socket lives in rootlesskit's private mount namespace and is
+          # NOT reachable from `docker exec` processes (parent namespace).
+          # The image instead maps TCP 2376 (TLS) into the parent namespace,
+          # and TLS certs are written to /certs (plain overlay layer, shared).
+          DIND_TLS_ENV="export DOCKER_HOST=tcp://localhost:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/certs/client"
           READY=0
           for i in $(seq 1 45); do
-            if docker exec dind-rootless docker version >/dev/null 2>&1; then
+            if docker exec dind-rootless sh -c "$DIND_TLS_ENV && docker version >/dev/null 2>&1"; then
               READY=1
               echo "rootless DinD ready (attempt $i)"
               break
             fi
             REMAINDER=$((i % 10))
             if [ "$REMAINDER" = "0" ]; then
-              echo "  ... attempt $i/45 still not ready; docker exec error output:"
-              docker exec dind-rootless docker version 2>&1 | head -n 6 || true
+              echo "  ... attempt $i/45 still not ready; docker version output:"
+              docker exec dind-rootless sh -c "$DIND_TLS_ENV && docker version 2>&1" | head -n 8 || true
+              echo "  certs present in /certs/client:"
+              docker exec dind-rootless sh -c 'ls -1 /certs/client 2>&1' || true
               echo "  last daemon log lines:"
               docker logs dind-rootless 2>&1 | tail -n 2 || true
             fi
@@ -87,13 +95,14 @@ jobs:
             docker logs dind-rootless || true
             exit 1
           fi
-          echo "=== Proof: dockerd runs as non-root user inside the container ==="
-          docker exec dind-rootless sh -c 'ps | grep [d]ockerd | head -3'
+          echo "=== Proof: daemon runs without root / privileged ==="
+          docker exec dind-rootless sh -c 'echo "exec runs as: $(id)"'
+          docker exec dind-rootless sh -c "$DIND_TLS_ENV && docker info --format 'daemon security options: {{.SecurityOptions}}'" || true
 
       - name: Build and run inside rootless DinD
         run: |
           docker cp samples/hello-dind dind-rootless:/tmp/build
-          docker exec dind-rootless sh -c 'docker build -t hello-dind /tmp/build'
-          OUT=$(docker exec dind-rootless sh -c 'docker run --rm hello-dind')
+          docker exec dind-rootless sh -c 'export DOCKER_HOST=tcp://localhost:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/certs/client; docker build -t hello-dind /tmp/build'
+          OUT=$(docker exec dind-rootless sh -c 'export DOCKER_HOST=tcp://localhost:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/certs/client; docker run --rm hello-dind')
           echo "Output: $OUT"
           echo "$OUT" | grep -q "inside Docker-in-Docker"
