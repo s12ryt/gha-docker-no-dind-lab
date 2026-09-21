@@ -35,21 +35,17 @@ jobs:
           # cannot get a path-attached profile, but Docker CAN apply a named
           # profile to the whole container via --security-opt apparmor=<name>.
           sudo tee /etc/apparmor.d/dind-rootless-userns >/dev/null <<'PROFILE'
-          # Permissive profile + explicit userns permission for dind-rootless
-          profile dind-rootless-userns flags=(attach_disconnected,mediate_deleted) {
+          # Permissive profile + explicit userns permission for dind-rootless.
+          # complain mode: log violations but never deny, so the confined
+          # container (incl. docker exec'd processes) can read /proc, connect
+          # unix sockets, etc. The `userns,` rule stays because complain mode
+          # would still be checked for userns creation on Ubuntu 24.04.
+          profile dind-rootless-userns flags=(attach_disconnected,mediate_deleted,complain) {
             userns,
-            file,
-            capability,
-            network,
-            mount,
-            umount,
-            signal,
-            ptrace,
-            unix,
           }
           PROFILE
           sudo apparmor_parser -r /etc/apparmor.d/dind-rootless-userns
-          echo "profile dind-rootless-userns loaded"
+          echo "profile dind-rootless-userns loaded (complain mode)"
 
       - name: Start rootless DinD and wait for readiness
         run: |
@@ -71,16 +67,18 @@ jobs:
 
           echo "Waiting for rootless dockerd (docker exec) ..."
           READY=0
-          for i in $(seq 1 90); do
+          for i in $(seq 1 45); do
             if docker exec dind-rootless docker version >/dev/null 2>&1; then
               READY=1
               echo "rootless DinD ready (attempt $i)"
               break
             fi
-            REMAINDER=$((i % 15))
+            REMAINDER=$((i % 10))
             if [ "$REMAINDER" = "0" ]; then
-              echo "  ... attempt $i/90 still not ready; last daemon log lines:"
-              docker logs dind-rootless 2>&1 | tail -n 3
+              echo "  ... attempt $i/45 still not ready; docker exec error output:"
+              docker exec dind-rootless docker version 2>&1 | head -n 6 || true
+              echo "  last daemon log lines:"
+              docker logs dind-rootless 2>&1 | tail -n 2 || true
             fi
             sleep 2
           done
