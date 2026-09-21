@@ -50,12 +50,16 @@ RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/r
 # 刪光條目後 rootless podman / rootlesskit 會自動 fallback「單映射模式」
 # (single uid mapping 0->1001),自行寫 uid_map 不需 newuidmap,搭配 vfs
 # storage 即可完整 build/run。
+# home 份 storage.conf 是 rootless 的優先配置 (查找順序在 /etc 之前),
+# graphroot/runroot 必須指到 toolbox 可寫的路徑 — 實測若沿用 /etc 份的
+# /var/lib/containers 會炸 "mkdir /var/lib/containers: permission denied"
+# (rootless 讀到明確寫死的 graphroot 就不會自動重定位到 $HOME)。
 RUN useradd -m -s /bin/bash toolbox \
     && sed -i '/^toolbox:/d' /etc/subuid /etc/subgid \
     && ! grep -q '^toolbox:' /etc/subuid /etc/subgid \
-    && mkdir -p /home/toolbox/.config/containers \
-    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /home/toolbox/.config/containers/storage.conf \
-    && chown -R toolbox:toolbox /home/toolbox/.config \
+    && mkdir -p /home/toolbox/.config/containers /home/toolbox/.local/share/containers/storage \
+    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/user/1000/containers"\ngraphroot = "/home/toolbox/.local/share/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /home/toolbox/.config/containers/storage.conf \
+    && chown -R toolbox:toolbox /home/toolbox/.config /home/toolbox/.local \
     && echo 'toolbox subuid/subgid entries removed (single-mapping mode)'
 
 # build 時期就把缺件擋下來
