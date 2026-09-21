@@ -81,6 +81,12 @@ jobs:
           cat > /tmp/podman-test.sh <<'EOT'
           #!/bin/bash
           set -e
+          echo '--- 診斷: newuidmap 提權鏈 ---'
+          ls -l /usr/bin/newuidmap /usr/bin/newgidmap
+          grep -E 'NoNewPrivs|CapEff' /proc/self/status
+          cat /etc/subuid /etc/subgid
+          su toolbox -c 'grep -E "NoNewPrivs|Uid:|CapEff" /proc/self/status; unshare -Ur true && echo "DIAG userns-ok" || echo "DIAG userns-FAIL"'
+          echo '--- 診斷結束 ---'
           mkdir -p /run/user/1000 /tmp/work
           chown toolbox:toolbox /run/user/1000 /tmp/work
           cp -r /src /tmp/work/hello && chown -R toolbox:toolbox /tmp/work/hello
