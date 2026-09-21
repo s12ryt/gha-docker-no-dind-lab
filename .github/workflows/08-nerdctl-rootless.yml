@@ -24,14 +24,48 @@ jobs:
           sudo tar -xzf /tmp/nerdctl.tgz -C /usr/local
           nerdctl --version
 
-      - name: 啟動 rootless containerd (setuptool)
+      - name: 解除 AppArmor 對 unprivileged userns 的限制 (Ubuntu 24.04)
         run: |
-          containerd-rootless-setuptool.sh install
-          for i in $(seq 1 15); do
+          # runner 的 kernel.apparmor_restrict_unprivileged_userns=1 會擋 rootlesskit
+          # 依官方提示為 rootlesskit 寫 unconfined+userns profile
+          cat <<'EOT' | sudo tee /etc/apparmor.d/usr.local.bin.rootlesskit >/dev/null
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          /usr/local/bin/rootlesskit flags=(unconfined) {
+            userns,
+
+            include if exists <local/usr.local.bin.rootlesskit>
+          }
+          EOT
+          sudo systemctl restart apparmor.service 2>/dev/null || sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.rootlesskit || true
+          echo "apparmor profile 已套用"
+
+      - name: 手動啟動 rootless containerd (背景程序,非 systemd user 單元)
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          mkdir -p "$XDG_RUNTIME_DIR" /tmp/rootless-logs
+          nohup containerd-rootless.sh > /tmp/rootless-logs/containerd.log 2>&1 &
+          for i in $(seq 1 20); do
             if nerdctl info >/dev/null 2>&1; then echo "rootless containerd 就緒"; break; fi
             sleep 2
           done
           nerdctl info | grep -E 'Server Version|Storage Driver' | head -3
+
+      - name: 手動啟動 rootless buildkitd (供 nerdctl build)
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          nohup buildkitd \
+            --root "$XDG_RUNTIME_DIR/buildkit" \
+            --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" \
+            --oci-worker-no-process-sandbox > /tmp/rootless-logs/buildkitd.log 2>&1 &
+          for i in $(seq 1 20); do
+            if buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+              echo "rootless buildkitd 就緒"; break
+            fi
+            sleep 2
+          done
+          buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers | head -3
 
       - name: nerdctl run (rootless)
         run: |
@@ -47,7 +81,9 @@ jobs:
 
       - name: 確認 rootless 環境
         run: |
-          test -n "$XDG_RUNTIME_DIR" && echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
           ls "$XDG_RUNTIME_DIR/containerd" 2>/dev/null | head -3
           echo "確認: containerd 以非 root 身分執行 (rootless)"
           ps -ef | grep '[c]ontainerd-rootless' | head -2
+          nerdctl info | grep -i rootless || true

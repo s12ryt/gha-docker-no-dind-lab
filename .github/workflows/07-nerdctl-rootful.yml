@@ -11,18 +11,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 安裝 nerdctl (full 套件含 CNI)
+      - name: 安裝 nerdctl (full 套件含 CNI 與 buildkit)
         run: |
           VER="$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
           echo "nerdctl 版本: $VER"
           curl -fsSL "https://github.com/containerd/nerdctl/releases/download/${VER}/nerdctl-full-${VER#v}-linux-amd64.tar.gz" -o /tmp/nerdctl.tgz
-          sudo tar -xzf /tmp/nerdctl.tgz -C /usr/local --strip-components=0
+          sudo tar -xzf /tmp/nerdctl.tgz -C /usr/local
           nerdctl --version
+          buildctl --version
+          buildkitd --version
 
       - name: 確認 runner 上的 containerd
         run: |
           sudo systemctl is-active containerd || sudo systemctl start containerd || true
           sudo ctr --address /run/containerd/containerd.sock version | head -4
+
+      - name: 啟動 buildkitd (buildkit 守護程序,非 dockerd)
+        run: |
+          sudo mkdir -p /run/buildkit
+          sudo nohup buildkitd --addr unix:///run/buildkit/buildkitd.sock > /tmp/buildkitd.log 2>&1 &
+          for i in $(seq 1 20); do
+            if sudo buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers >/dev/null 2>&1; then
+              echo "buildkitd 就緒"; break
+            fi
+            sleep 2
+          done
+          sudo buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers | head -3
 
       - name: nerdctl pull + run (rootful containerd)
         run: |
@@ -30,7 +44,7 @@ jobs:
           OUT="$(sudo nerdctl --address /run/containerd/containerd.sock run --rm alpine:3.20 echo 'nerdctl rootful 執行 OK')"
           echo "$OUT"
 
-      - name: nerdctl build (rootful containerd)
+      - name: nerdctl build (rootful containerd + buildkitd)
         run: |
           sudo nerdctl --address /run/containerd/containerd.sock build -t hello-nerdctl samples/hello
           OUT="$(sudo nerdctl --address /run/containerd/containerd.sock run --rm hello-nerdctl)"
