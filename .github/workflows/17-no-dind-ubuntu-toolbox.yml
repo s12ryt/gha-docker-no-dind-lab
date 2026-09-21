@@ -136,13 +136,14 @@ jobs:
           BK_ROOT="$XDG_RUNTIME_DIR/buildkit-in-toolbox"
           BK_ADDR="unix://$BK_ROOT/buildkitd.sock"
           mkdir -p "$BK_ROOT"
-          # 關鍵 (同 08/16): 絕不加 --copy-up=/run,socket 必須留在真實路徑
-          rootlesskit \
-            --state-dir="$XDG_RUNTIME_DIR/rootlesskit-bk" \
-            --net=slirp4netns \
-            --disable-host-loopback \
-            --copy-up=/etc \
-            buildkitd --root "$BK_ROOT" --addr "$BK_ADDR" --oci-worker-no-process-sandbox &
+          # rootlesskit 硬性要求 /etc/subuid 條目 (無單映射 fallback,容器內不可行);
+          # buildkitd rootless 的真正前提是「mapped root in a user namespace」,
+          # unshare 單映射 (--map-root-user) 同樣滿足。native snapshotter 免掛
+          # overlay (容器 fs 已是 overlay,避開 nested overlay);scratch 樣本
+          # FROM scratch 無需網路,故不需 slirp4netns。
+          unshare --user --map-root-user --mount \
+            buildkitd --root "$BK_ROOT" --addr "$BK_ADDR" \
+            --oci-worker-no-process-sandbox --oci-worker-snapshotter native &
           BKPID=$!
           READY=0
           for i in $(seq 1 30); do
