@@ -92,7 +92,14 @@ jobs:
           cp -r /src /tmp/work/hello && chown -R toolbox:toolbox /tmp/work/hello
           su toolbox -c '
             export XDG_RUNTIME_DIR=/run/user/1000
-            podman build -t localhost/hello-podman-in-toolbox /tmp/work/hello
+            echo "--- 生效中的 storage 配置 ---"
+            podman info 2>/dev/null | grep -E "graphDriverName|configFile|runRoot|graphRoot|RunRoot|GraphRoot" || true
+            if ! podman build --storage-opt ignore_chown_errors=true -t localhost/hello-podman-in-toolbox /tmp/work/hello; then
+              echo "--- podman build 失敗, 傾印配置診斷 ---"
+              cat /etc/containers/storage.conf 2>/dev/null || echo "(no /etc/containers/storage.conf)"
+              cat "$HOME/.config/containers/storage.conf" 2>/dev/null || echo "(no home storage.conf)"
+              exit 1
+            fi
             podman run --rm localhost/hello-podman-in-toolbox
           ' | tee /tmp/work/out.txt
           grep -q "without Docker-in-Docker" /tmp/work/out.txt
