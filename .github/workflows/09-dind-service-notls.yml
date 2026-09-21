@@ -42,39 +42,49 @@ jobs:
 
       - name: Build inside DinD
         run: |
-          # 127.0.0.1:2375 goes through the host docker-proxy; the service
-          # container's bridge IP bypasses it. Probe both and use whichever
-          # survives a real build. If both fail, dump diagnostics.
-          CANDIDATES="tcp://127.0.0.1:2375"
-          DIND_CID=$(docker ps -aq --filter ancestor=docker:dind | head -n 1)
-          if [ -n "$DIND_CID" ]; then
-            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CID")
-            if [ -n "$DIND_IP" ]; then
-              CANDIDATES="$CANDIDATES tcp://$DIND_IP:2375"
-            fi
-          fi
-          echo "Candidate endpoints: $CANDIDATES"
-
-          BUILD_OK=0
-          for H in $CANDIDATES; do
-            echo "--- probing $H ---"
-            if docker -H "$H" version --format 'probe ok (server {{.Server.Version}})' >/dev/null 2>&1; then
-              echo "--- building via $H ---"
-              if docker -H "$H" build -t hello-dind samples/hello-dind; then
-                echo "DIND_HOST=$H" >> "$GITHUB_ENV"
-                echo "Build succeeded via $H"
-                BUILD_OK=1
-                break
+          # The dind service container can be restarted by the runner mid-job,
+          # and newer dockerd intentionally slows down startup for
+          # unauthenticated TCP bindings ("Startup is intentionally being
+          # slowed down"). So retry the whole probe+build until it sticks.
+          collect_candidates() {
+            CANDIDATES="tcp://127.0.0.1:2375"
+            DIND_CID=$(docker ps -aq --filter ancestor=docker:dind | head -n 1)
+            if [ -n "$DIND_CID" ]; then
+              DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CID")
+              if [ -n "$DIND_IP" ]; then
+                CANDIDATES="$CANDIDATES tcp://$DIND_IP:2375"
               fi
-              echo "build via $H failed"
-            else
-              echo "probe via $H failed"
             fi
+          }
+          BUILD_OK=0
+          for ATTEMPT in $(seq 1 10); do
+            collect_candidates
+            echo "=== Attempt $ATTEMPT/10, candidates: $CANDIDATES ==="
+            for H in $CANDIDATES; do
+              echo "--- probing $H ---"
+              if docker -H "$H" version --format 'probe ok (server {{.Server.Version}})' >/dev/null 2>&1; then
+                echo "--- building via $H ---"
+                if docker -H "$H" build -t hello-dind samples/hello-dind; then
+                  echo "DIND_HOST=$H" >> "$GITHUB_ENV"
+                  echo "Build succeeded via $H (attempt $ATTEMPT)"
+                  BUILD_OK=1
+                  break
+                fi
+                echo "build via $H failed"
+              else
+                echo "probe via $H failed"
+              fi
+            done
+            if [ "$BUILD_OK" = "1" ]; then
+              break
+            fi
+            echo "attempt $ATTEMPT exhausted; waiting 6s before retry (dind may be restarting)"
+            sleep 6
           done
 
           if [ "$BUILD_OK" != "1" ]; then
             echo ""
-            echo "=== All endpoints failed - dumping diagnostics ==="
+            echo "=== All attempts failed - dumping diagnostics ==="
             echo "--- docker ps -a ---"
             docker ps -a
             echo "--- dind container logs (last 80 lines) ---"

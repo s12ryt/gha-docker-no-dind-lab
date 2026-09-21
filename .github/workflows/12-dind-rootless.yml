@@ -53,9 +53,18 @@ jobs:
 
       - name: Start rootless DinD and wait for readiness
         run: |
+          # slirp4netns (used by rootlesskit) creates a tap device, which
+          # requires /dev/net/tun to exist inside the container.
+          if [ ! -e /dev/net/tun ]; then
+            echo "creating /dev/net/tun (missing on this runner)"
+            sudo mknod /dev/net/tun c 10 200 || true
+          fi
           OPTS="--security-opt apparmor=dind-rootless-userns --security-opt seccomp=unconfined --security-opt systempaths=unconfined"
           if [ -e /dev/fuse ]; then
             OPTS="$OPTS --device /dev/fuse"
+          fi
+          if [ -e /dev/net/tun ]; then
+            OPTS="$OPTS --device /dev/net/tun"
           fi
           echo "Starting dind-rootless with: $OPTS"
           docker run -d --name dind-rootless $OPTS docker:dind-rootless
