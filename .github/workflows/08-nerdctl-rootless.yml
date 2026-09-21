@@ -57,21 +57,25 @@ jobs:
       - name: 手動啟動 rootless buildkitd (供 nerdctl build)
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          nohup buildkitd \
-            --root "$XDG_RUNTIME_DIR/buildkit" \
-            --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" \
-            --oci-worker-no-process-sandbox > /tmp/rootless-logs/buildkitd.log 2>&1 &
-          for i in $(seq 1 20); do
-            if buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+          # buildkitd rootless 必須在 user namespace 內執行,用 rootlesskit 包一層
+          nohup rootlesskit \
+            --state-dir="$XDG_RUNTIME_DIR/rootlesskit-buildkit" \
+            --net=slirp4netns --copy-up=/etc --copy-up=/run \
+            buildkitd \
+              --root "$XDG_RUNTIME_DIR/buildkit" \
+              --addr "unix:///run/buildkit/buildkitd.sock" \
+              --oci-worker-no-process-sandbox > /tmp/rootless-logs/buildkitd.log 2>&1 &
+          for i in $(seq 1 25); do
+            if buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
               echo "rootless buildkitd 就緒"; break
             fi
             sleep 2
           done
-          if ! buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+          if ! buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
             echo "buildkitd 未就緒,傾印日誌:"; cat /tmp/rootless-logs/buildkitd.log
             exit 1
           fi
-          buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers | head -3
+          buildctl --addr "unix:///run/buildkit/buildkitd.sock" debug workers | head -3
 
       - name: nerdctl run (rootless)
         run: |
