@@ -33,9 +33,12 @@ RUN curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDC
 # (rootless 用戶執行時,podman/buildah 會自動重定位到 $HOME 與 $XDG_RUNTIME_DIR,不受此設定影響)
 # ignore_chown_errors: 單映射模式 (無 subuid) 下鏡像層內其他 uid/gid (如 gid 42)
 # 無法 chown 會炸 "lchown invalid argument" — 這是無 subuid 環境的官方解法 (HPC/無 root 場景)
-# 注意: 值必須用「裸布爾」 true — 帶引號的字串 "true" 在部分 containers/storage
-# 版本的 TOML bool 欄位解不開,整份配置會被丟掉 fallback 預設 (實測踩過)
-RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = true\n' > /etc/containers/storage.conf
+# 注意: 值必須是「帶引號的字串」"true" — 實測裸 bool 會炸 TOML 類型
+# (incompatible types: TOML value has type bool; destination has type string)
+# 導致整份配置失效連帶其他選項全丟。另實測此選項在 Ubuntu 24.04 的
+# containers/storage 對 pull/build 容器初始化路徑壓不住 chown EINVAL —
+# 單映射下的根治解是 scratch + 靜態 binary 樣本 (見 samples/hello-scratch)
+RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
 
 # rootless 專用非 root 帳號
 # 刻意「不」設定 subuid/subgid: 實測 GHA 容器內 setuid newuidmap 寫多行映射
@@ -51,7 +54,7 @@ RUN useradd -m -s /bin/bash toolbox \
     && sed -i '/^toolbox:/d' /etc/subuid /etc/subgid \
     && ! grep -q '^toolbox:' /etc/subuid /etc/subgid \
     && mkdir -p /home/toolbox/.config/containers \
-    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = true\n' > /home/toolbox/.config/containers/storage.conf \
+    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /home/toolbox/.config/containers/storage.conf \
     && chown -R toolbox:toolbox /home/toolbox/.config \
     && echo 'toolbox subuid/subgid entries removed (single-mapping mode)'
 

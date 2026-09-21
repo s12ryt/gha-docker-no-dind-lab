@@ -76,6 +76,13 @@ jobs:
             echo "buildah 容器內 build+run+匯出 通過"
           '
 
+      - name: 編譯 scratch 樣本 (靜態 binary,供單映射 rootless 測試)
+        run: |
+          mkdir -p /tmp/scratch-build
+          cp samples/hello-scratch/Dockerfile /tmp/scratch-build/
+          gcc -static -o /tmp/scratch-build/hello samples/hello-scratch/hello.c
+          ls -lh /tmp/scratch-build/hello
+
       - name: 測試 3 — podman rootless (容器內非 root user namespace)
         run: |
           cat > /tmp/podman-test.sh <<'EOT'
@@ -110,7 +117,7 @@ jobs:
             --security-opt seccomp=unconfined \
             --security-opt systempaths=unconfined \
             --device /dev/fuse --device /dev/net/tun \
-            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/scratch-build:/src:ro \
             -v /tmp/podman-test.sh:/test.sh:ro \
             no-dind-ubuntu:local bash /test.sh
 
@@ -162,7 +169,7 @@ jobs:
             --security-opt seccomp=unconfined \
             --security-opt systempaths=unconfined \
             --device /dev/fuse --device /dev/net/tun \
-            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/scratch-build:/src:ro \
             -v /tmp/bk-test.sh:/test.sh:ro \
             no-dind-ubuntu:local bash /test.sh
 
