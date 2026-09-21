@@ -62,6 +62,7 @@ jobs:
           mkdir -p /tmp/buildah-out
           docker run --rm --user root \
             --security-opt apparmor=no-dind-toolbox-userns \
+            --security-opt seccomp=unconfined \
             -v "$PWD/samples/hello:/src:ro" \
             -v /tmp/buildah-out:/out \
             no-dind-ubuntu:local bash -c '
