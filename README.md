@@ -97,7 +97,7 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 | 09 | dind-service-notls | ✅ (修3輪) | service 容器會被 runner 重建 + dockerd 無 TLS 減速啟動 |
 | 10 | dind-manual-tls | ✅ | 一次過 |
 | 11 | dind-job-container | ✅ | 一次過 (GitLab 風格) |
-| 12 | dind-rootless | ✅ (修5輪) | named AppArmor + /dev/net/tun + TCP/TLS 三重解 |
+| 12 | dind-rootless | ✅ (修6輪) | named AppArmor + /dev/net/tun + TCP/TLS 三重解 |
 | 13 | dood-socket-mount | ✅ | 一次過 |
 
 ## 推薦
