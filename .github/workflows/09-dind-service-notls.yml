@@ -24,10 +24,10 @@ jobs:
           echo "=== Host daemon (preinstalled on runner) ==="
           docker info --format 'Name={{.Name}}  Server={{.ServerVersion}}'
           echo ""
-          echo "=== Waiting for DinD daemon on tcp://localhost:2375 ==="
+          echo "=== Waiting for DinD daemon on tcp://127.0.0.1:2375 ==="
           READY=0
           for i in $(seq 1 30); do
-            if docker -H tcp://localhost:2375 info --format 'Name={{.Name}}  Server={{.ServerVersion}}' 2>/dev/null; then
+            if docker -H tcp://127.0.0.1:2375 info --format 'Name={{.Name}}  Server={{.ServerVersion}}' 2>/dev/null; then
               READY=1
               echo "DinD daemon is ready (attempt $i)"
               break
@@ -42,12 +42,12 @@ jobs:
 
       - name: Build inside DinD
         run: |
-          export DOCKER_HOST=tcp://localhost:2375
+          export DOCKER_HOST=tcp://127.0.0.1:2375
           docker build -t hello-dind samples/hello-dind
 
       - name: Run inside DinD and verify isolation
         run: |
-          export DOCKER_HOST=tcp://localhost:2375
+          export DOCKER_HOST=tcp://127.0.0.1:2375
           OUT=$(docker run --rm hello-dind)
           echo "Output: $OUT"
           echo "$OUT" | grep -q "inside Docker-in-Docker"

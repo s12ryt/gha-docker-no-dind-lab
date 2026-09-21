@@ -13,7 +13,7 @@ jobs:
 
       - name: Start rootless DinD and wait for readiness
         run: |
-          OPTS="--security-opt apparmor=unconfined"
+          OPTS="--security-opt apparmor=unconfined --security-opt seccomp=unconfined --security-opt systempaths=unconfined"
           if [ -e /dev/fuse ]; then
             OPTS="$OPTS --device /dev/fuse"
           fi
