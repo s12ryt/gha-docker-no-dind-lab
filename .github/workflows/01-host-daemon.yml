@@ -1,0 +1,38 @@
+name: 01 Host Daemon
+
+on:
+  workflow_dispatch:
+
+jobs:
+  host-daemon:
+    name: 直接使用 runner 預裝 Docker (host daemon)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 確認 Docker 版本與 daemon 狀態
+        run: |
+          docker version
+          docker info --format '{{.ServerVersion}} | storage={{.Driver}}'
+
+      - name: Build (host daemon)
+        run: docker build -t hello-host samples/hello
+
+      - name: Run + 驗證輸出
+        run: |
+          OUT="$(docker run --rm hello-host)"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: 確認沒有 Docker-in-Docker (無 dind sidecar)
+        run: |
+          if docker ps -a --format '{{.Image}}' | grep -Eq 'docker:d[i]nd'; then
+            echo "發現 dind 容器,不應出現"; exit 1
+          fi
+          echo "確認: 沒有任何 dind 容器"
+
+      - name: 使用 GitHub Container Registry 快取映像 (docker pull 外部 image 示範)
+        run: |
+          docker pull alpine:3.20
+          docker run --rm alpine:3.20 echo "拉取外部映像並執行 OK"

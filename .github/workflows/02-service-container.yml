@@ -1,0 +1,51 @@
+name: 02 Service Container
+
+on:
+  workflow_dispatch:
+
+jobs:
+  service-container:
+    name: GitHub services sidecar (redis + nginx)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      nginx:
+        image: nginx:1.27-alpine
+        ports:
+          - 8080:80
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 驗證 redis 服務 (透過 localhost)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq redis-tools >/dev/null
+          for i in $(seq 1 10); do
+            if redis-cli -h localhost -p 6379 ping | grep -q PONG; then break; fi
+            sleep 3
+          done
+          redis-cli -h localhost -p 6379 ping | grep PONG
+          redis-cli -h localhost -p 6379 set no-dind ok
+          redis-cli -h localhost -p 6379 get no-dind | grep ok
+
+      - name: 驗證 nginx 服務 (透過 localhost)
+        run: |
+          curl -fsS http://localhost:8080/ | grep -q "Welcome to nginx"
+          echo "nginx service container 回應 OK"
+
+      - name: 確認 services 由 host daemon 管理 (非 dind)
+        run: |
+          docker ps --format '{{.Image}} {{.Names}}'
+          docker ps --format '{{.Image}}' | grep -q 'redis:7-alpine'
+          docker ps --format '{{.Image}}' | grep -q 'nginx:1.27-alpine'
+          if docker ps -a --format '{{.Image}}' | grep -Eq 'docker:d[i]nd'; then
+            echo "發現 dind,不應出現"; exit 1
+          fi

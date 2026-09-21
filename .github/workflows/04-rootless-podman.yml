@@ -1,0 +1,42 @@
+name: 04 Rootless Podman
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rootless-podman:
+    name: Podman rootless (無 dockerd)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安裝 Podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman >/dev/null
+          podman --version
+
+      - name: Podman build (rootless)
+        run: podman build -t hello-podman samples/hello
+
+      - name: Podman run + 驗證
+        run: |
+          OUT="$(podman run --rm hello-podman)"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: 確認 rootless (無 root、無 dockerd)
+        run: |
+          podman info --format '{{.Host.Security.Rootless}} {{.Host.OCIRuntime.Name}}'
+          podman info --format '{{.Host.Security.Rootless}}' | grep -q true
+          if pgrep -x dockerd >/dev/null 2>&1; then
+            echo "有 dockerd 在跑 (不影響 podman,但記錄一下)"
+          else
+            echo "確認: 沒有 dockerd,容器由 crun rootless 執行"
+          fi
+
+      - name: Podman 相容 Docker CLI (docker alias 演示)
+        run: |
+          podman pull alpine:3.20
+          podman run --rm alpine:3.20 echo "podman 也能拉取並執行 Docker Hub 映像"

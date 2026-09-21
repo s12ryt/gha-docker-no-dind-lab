@@ -1,0 +1,44 @@
+name: 06 Kaniko
+
+on:
+  workflow_dispatch:
+
+jobs:
+  kaniko:
+    name: Kaniko daemonless build (--no-push)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 用 host daemon 跑 kaniko executor 容器 (daemonless 建構)
+        run: |
+          mkdir -p /tmp/kaniko-output
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -v /tmp/kaniko-output:/tmp/kaniko-output \
+            gcr.io/kaniko-project/executor:latest \
+            --context dir:///workspace/samples/hello \
+            --dockerfile /workspace/samples/hello/Dockerfile \
+            --destination hello-kaniko:local \
+            --no-push \
+            --tarPath /tmp/kaniko-output/hello-kaniko.tar \
+            --cleanup
+
+      - name: 驗證 kaniko 產出 image tar
+        run: |
+          ls -lh /tmp/kaniko-output/hello-kaniko.tar
+          file /tmp/kaniko-output/hello-kaniko.tar | grep -qi tar
+
+      - name: 匯入 tar 並執行驗證
+        run: |
+          docker load -i /tmp/kaniko-output/hello-kaniko.tar
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep hello-kaniko
+          OUT="$(docker run --rm hello-kaniko:local)"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: 說明 (kaniko 本身不需要 daemon 建構)
+        run: |
+          echo "kaniko 在容器內以使用者空間完成建構,不依賴 container 內的 dockerd"
+          echo "本 workflow 用 host daemon 載入/執行 kaniko 產出的 tar (驗證用)"

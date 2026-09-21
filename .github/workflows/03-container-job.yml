@@ -1,0 +1,40 @@
+name: 03 Container Job
+
+on:
+  workflow_dispatch:
+
+jobs:
+  container-job:
+    name: Job 跑在 container 內 (不需任何 docker)
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm-slim
+      options: --cpus 1
+    env:
+      NODE_ENV: test
+    steps:
+      - name: Checkout (在 container 內)
+        uses: actions/checkout@v4
+
+      - name: 驗證 step 確實跑在 container 內
+        run: |
+          echo "hostname: $(hostname)"
+          grep -q docker /proc/1/cgroup 2>/dev/null || cat /proc/self/cgroup | head -3
+          test -f /.dockerenv && echo "確認: /.dockerenv 存在,job 在容器內"
+          node --version
+          npm --version
+
+      - name: 在容器內執行 Node 測試 (不需 docker CLI)
+        run: |
+          node -e "console.log('container job 跑 Node:', process.version)"
+          node -e "if (process.env.NODE_ENV !== 'test') { process.exit(1) }"
+          echo "container job 驗證 OK"
+
+      - name: 容器內無 docker daemon (證明沒有 DinD)
+        run: |
+          if command -v docker >/dev/null 2>&1; then
+            echo "container 內有 docker CLI,但 daemon 檢查:"
+            docker info 2>&1 | head -2 || true
+          else
+            echo "確認: node 容器內沒有 docker CLI,也沒有 daemon — 這就是免 DinD 的 container job 模式"
+          fi

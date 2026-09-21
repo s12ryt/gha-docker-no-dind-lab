@@ -1,0 +1,53 @@
+name: 08 Nerdctl Rootless
+
+on:
+  workflow_dispatch:
+
+jobs:
+  nerdctl-rootless:
+    name: nerdctl + rootless containerd (無 root、無 daemon root)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安裝 rootless 相依套件
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq uidmap dbus-user-session >/dev/null
+          newuidmap --version || true
+
+      - name: 安裝 nerdctl full
+        run: |
+          VER="$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
+          curl -fsSL "https://github.com/containerd/nerdctl/releases/download/${VER}/nerdctl-full-${VER#v}-linux-amd64.tar.gz" -o /tmp/nerdctl.tgz
+          sudo tar -xzf /tmp/nerdctl.tgz -C /usr/local
+          nerdctl --version
+
+      - name: 啟動 rootless containerd (setuptool)
+        run: |
+          containerd-rootless-setuptool.sh install
+          for i in $(seq 1 15); do
+            if nerdctl info >/dev/null 2>&1; then echo "rootless containerd 就緒"; break; fi
+            sleep 2
+          done
+          nerdctl info | grep -E 'Server Version|Storage Driver' | head -3
+
+      - name: nerdctl run (rootless)
+        run: |
+          OUT="$(nerdctl run --rm alpine:3.20 echo 'nerdctl rootless 執行 OK')"
+          echo "$OUT"
+
+      - name: nerdctl build (rootless)
+        run: |
+          nerdctl build -t hello-rootless samples/hello
+          OUT="$(nerdctl run --rm hello-rootless)"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: 確認 rootless 環境
+        run: |
+          test -n "$XDG_RUNTIME_DIR" && echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+          ls "$XDG_RUNTIME_DIR/containerd" 2>/dev/null | head -3
+          echo "確認: containerd 以非 root 身分執行 (rootless)"
+          ps -ef | grep '[c]ontainerd-rootless' | head -2

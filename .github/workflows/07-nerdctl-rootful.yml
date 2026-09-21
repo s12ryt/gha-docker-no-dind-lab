@@ -1,0 +1,43 @@
+name: 07 Nerdctl Rootful
+
+on:
+  workflow_dispatch:
+
+jobs:
+  nerdctl-rootful:
+    name: nerdctl + rootful containerd (Docker 相容 CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安裝 nerdctl (full 套件含 CNI)
+        run: |
+          VER="$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
+          echo "nerdctl 版本: $VER"
+          curl -fsSL "https://github.com/containerd/nerdctl/releases/download/${VER}/nerdctl-full-${VER#v}-linux-amd64.tar.gz" -o /tmp/nerdctl.tgz
+          sudo tar -xzf /tmp/nerdctl.tgz -C /usr/local --strip-components=0
+          nerdctl --version
+
+      - name: 確認 runner 上的 containerd
+        run: |
+          sudo systemctl is-active containerd || sudo systemctl start containerd || true
+          sudo ctr --address /run/containerd/containerd.sock version | head -4
+
+      - name: nerdctl pull + run (rootful containerd)
+        run: |
+          sudo nerdctl --address /run/containerd/containerd.sock pull alpine:3.20
+          OUT="$(sudo nerdctl --address /run/containerd/containerd.sock run --rm alpine:3.20 echo 'nerdctl rootful 執行 OK')"
+          echo "$OUT"
+
+      - name: nerdctl build (rootful containerd)
+        run: |
+          sudo nerdctl --address /run/containerd/containerd.sock build -t hello-nerdctl samples/hello
+          OUT="$(sudo nerdctl --address /run/containerd/containerd.sock run --rm hello-nerdctl)"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: 確認完全沒用到 dockerd
+        run: |
+          if pgrep -x dockerd >/dev/null 2>&1; then echo "dockerd 仍在 runner 上 (預裝),但本 job 完全未使用它"; else echo "確認: 無 dockerd"; fi
+          sudo nerdctl --address /run/containerd/containerd.sock ps -a
