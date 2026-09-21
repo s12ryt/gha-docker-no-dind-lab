@@ -1,7 +1,7 @@
 # no-dind-ubuntu — 「不用 Docker-in-Docker」的 Ubuntu 工具箱
 #
 # 一個 image 打包所有 no-dind 的 Docker 同類工具鏈:
-#   - docker CLI (供 DooD: 掛 host socket 操作外部 daemon,容器內絕不起 dockerd)
+#   - docker CLI (僅作介面相容;本工具箱測試不掛 host socket,容器內絕不起 dockerd)
 #   - podman / buildah (無 daemon 建構與執行)
 #   - skopeo (無 daemon 鏡像複製/轉換)
 #   - nerdctl-full (nerdctl + buildctl + buildkitd + rootlesskit + slirp4netns)
@@ -29,7 +29,9 @@ RUN curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDC
     && rm -f /tmp/nerdctl.tgz
 
 # 容器內最穩的 storage driver (不依賴 overlay 上層或 /dev/fuse)
-RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\n' > /etc/containers/storage.conf
+# runroot/graphroot 必須明寫: 覆蓋預設 storage.conf 後 buildah 會報 "runroot must be set"
+# (rootless 用戶執行時,podman/buildah 會自動重定位到 $HOME 與 $XDG_RUNTIME_DIR,不受此設定影響)
+RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' > /etc/containers/storage.conf
 
 # rootless 專用非 root 帳號 (subuid/subgid 供 user namespace 映射)
 RUN useradd -m -s /bin/bash toolbox \
