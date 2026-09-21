@@ -1,11 +1,12 @@
-# GitHub Actions Docker 策略驗證場 — 沒有 dind 的 11 種姿勢 + dind 對照組 5 種
+# GitHub Actions Docker 策略驗證場 — 沒有 dind 的 12 種姿勢 + dind 對照組 5 種
 
 > Repo: https://github.com/s12ryt/gha-docker-no-dind-lab
 > 所有 workflow 皆 `workflow_dispatch` 手動觸發、ubuntu-latest。
 
-## 兩大系列
+## 三大系列
 
 - **主線 Part 1 (01-08 + 14-16, 共 11 個): 沒有 Docker-in-Docker 也能用 Docker + Docker 同類方案** — 原則: 絕不用 `docker:dind`;其中 14-16 更進一步在 **dockerd 停用** 狀態下實測 (buildah / skopeo / buildkit-daemonless),證明「沒有 docker 也能做 docker 的事」
+- **主線 Part 4 (17, 總成): 自製 no-dind Ubuntu 工具箱** — `images/no-dind-ubuntu/Dockerfile` 打包 9 個工具 (docker CLI / podman / buildah / skopeo / nerdctl / buildctl / buildkitd / rootlesskit / slirp4netns),在**容器內**做完整 no-dind 實測,**全程不掛 host docker socket** (自給自足 daemonless)
 - **對照組 Part 2 (09-13, 附錄): 就是要用 Docker-in-Docker 時的正確姿勢** — dind service / TLS / container job / rootless / DooD
 
 ## 為什麼優先不要 Docker-in-Docker?
@@ -36,6 +37,12 @@
 | 14 | buildah-rootless | daemonless 建構+執行 | ❌ (實測停用) | ❌ | 無 dockerd 的 Dockerfile build/run,產 docker-archive |
 | 15 | skopeo-daemonless | 鏡像複製/格式轉換 | ❌ (實測停用) | ❌ | pull/push/inspect,tar 互轉,連 build 都不需要 |
 | 16 | buildkit-daemonless | 一次性 buildkitd | ❌ (實測停用) | ❌ | 零常駐: rootless buildkitd 起→build→收,產 OCI tar |
+
+## Part 4 策略總覽 (17, 總成: no-dind Ubuntu 工具箱)
+
+| # | Workflow | 模式 | 掛 host socket? | 容器內測試 | 適用場景 |
+|---|----------|------|:---:|---|----------|
+| 17 | no-dind-ubuntu-toolbox | 自製工具箱 image (9 工具) → 容器內實測 | ❌ (全程不掛) | skopeo / buildah / podman rootless / buildkit daemonless | 把整套 no-dind 工具鏈打包成可攜 image,進任何環境都能 build 不靠 dind |
 
 ## Part 2 策略總覽 (09-13, 對照組: 就是用 dind)
 
@@ -79,6 +86,9 @@ Docker 相容 CLI 直連 containerd。rootful 用系統 containerd (`sudo nerdct
 ### 16 BuildKit Daemonless (一次性 buildkitd)
 官方 buildkit tarball (`buildctl`+`buildkitd`) + apt 補 `rootlesskit`/`slirp4netns`,rootless 手動起 buildkitd → `buildctl build --output type=oci` → **trap 收掉 daemon,零常駐**。與 05 的差別: 05 依賴 host docker daemon 起 buildkitd 容器,16 完全不碰 docker。
 
+### 17 No-DinD Ubuntu Toolbox (Part 4 總成)
+自製 `images/no-dind-ubuntu/Dockerfile`: ubuntu:24.04 打包 docker CLI / podman / buildah / skopeo / nerdctl / buildctl / buildkitd / rootlesskit / slirp4netns 九件套,非 root 帳號 `toolbox` 為預設使用者。Workflow 在**容器內**做完整 no-dind 實測,**全程不掛 host docker socket**: skopeo 拉鏡像、buildah build+run、podman rootless build+run、一次性 rootless buildkitd 產 OCI tar。容器內 rootless 的地雷密度遠高於 host (單映射 user namespace),全部解法見踩坑 17。
+
 ### 09 DinD Service (No TLS)
 dind 當 `services:` sidecar,`DOCKER_TLS_CERTDIR: ''` 讓它聽 2375 無 TLS。job step 用 `DOCKER_HOST=tcp://127.0.0.1:2375` 操作「裡面的 docker」。**build 務必帶 retry** (原因見踩坑)。
 
@@ -114,6 +124,7 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 | 14 | buildah-rootless | ✅ | 一次過;dockerd 停用下 build+run+匯出 docker-archive |
 | 15 | skopeo-daemonless | ✅ | 一次過;dockerd 停用下全格式轉換 |
 | 16 | buildkit-daemonless | ✅ (修2輪) | asset 檔名點號 + tarball 不含 rootlesskit 要 apt 補 |
+| 17 | no-dind-ubuntu-toolbox | ✅ (修15輪) | 容器內 rootless 單映射全解: sed 刪 subuid + scratch 樣本 + unshare 跑 buildkitd |
 
 ## 推薦
 
@@ -122,6 +133,7 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 - 安全/合規要求無 root 無 daemon: **04 或 08**;無 dockerd 還要 build+run: **14**
 - 大型多目標建構: **05**;受限環境建 image: **06**;零常駐一次性建構: **16**
 - 只需搬鏡像/格式轉換 (連 build 都不用): **15**
+- 要把整組工具鏈帶著走、進任何容器環境都能幹活: **17 (工具箱)**
 
 ### Part 2 (就是要 dind)
 - 預設: **09** (宣告式,簡單);要加密: **10**
@@ -196,6 +208,53 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 **坑 2: 官方 tarball 只含 buildctl/buildkitd,不含 rootlesskit/slirp4netns**
 - **症狀**: `rootlesskit: command not found`
 - **修法**: `sudo apt-get install -y rootlesskit slirp4netns` (Ubuntu 24.04 universe repo 有)。AppArmor profile 路徑要對準實際 binary: apt 裝的在 `/usr/bin/rootlesskit` → profile 名 `usr.bin.rootlesskit`;tarball 解到 `/usr/local/bin/buildkitd` → profile 名 `usr.local.bin.buildkitd`。socket 放 `$XDG_RUNTIME_DIR` 下、絕不 `--copy-up=/run` (同 08 坑 3)
+
+### 17 no-dind-ubuntu-toolbox: 容器內 rootless 單映射生存指南 (15 輪修復的精華)
+
+容器內 (非特權 docker 容器) 跑 rootless 容器工具,地雷密度遠高於 host 上。以下每個坑都是實測炸出來的:
+
+**坑 1: `skopeo inspect dir:` 的輸出沒有 repo name**
+- **症狀**: `skopeo copy docker://alpine:3.20 dir:/tmp/alpine` 成功,但 `skopeo inspect dir:/tmp/alpine | grep -qi alpine` 永遠失敗
+- **根因**: `dir:` 來源的 inspect JSON 中 `Name` 為空、`RepoTags` 為 null — 輸出裡根本沒有 "alpine" 字樣
+- **修法**: 改驗 JSON 結構欄位,如 `grep -q '"Os"'`
+
+**坑 2: buildah `runroot must be set`**
+- **症狀**: `buildah bud` 報 `failed to get container config: runroot must be set`
+- **根因**: Dockerfile 裡用 printf 覆寫 `/etc/containers/storage.conf` 只寫了 `driver=vfs`,弄丟了 Ubuntu 預設配置的 `runroot`/`graphroot`
+- **修法**: storage.conf 三行都要明寫: `driver = "vfs"` + `runroot = "..."` + `graphroot = "..."`
+
+**坑 3: docker 預設 seccomp 擋 `unshare(CLONE_NEWUSER)`**
+- **症狀**: 容器內 buildah (root+chroot) 報 `unshare: operation not permitted`;host 上同指令沒事
+- **根因**: 容器無 CAP_SYS_ADMIN,docker 預設 seccomp profile 擋 user namespace 相關 syscall;host 的 AppArmor userns 限制 (同 08/12) 疊加
+- **修法**: `docker run` 要同時給 `--security-opt seccomp=unconfined` **和** host 預載入的 named AppArmor profile (`--security-opt apparmor=no-dind-toolbox-userns`,內容 `userns,` + complain flag,同 12 踩坑)
+
+**坑 4: Ubuntu `useradd` 會自動配 subuid/subgid — 光不手動 echo 沒用**
+- **症狀**: Dockerfile 刪了 `echo 'toolbox:...' >> /etc/subuid`,容器內 `cat /etc/subuid` 仍見 `toolbox:165536:65536`
+- **根因**: Ubuntu 的 useradd 依 `/etc/login.defs` (SUB_UID_MIN..MAX) **自動分配** subuid/subgid (基礎映像的 ubuntu 用戶先佔了 100000 起頭段)
+- **修法**: `RUN useradd -m toolbox && sed -i '/^toolbox:/d' /etc/subuid /etc/subgid && ! grep -q '^toolbox:' /etc/subuid /etc/subgid`
+
+**坑 5: newuidmap 多行映射 EPERM → 走「單映射模式」**
+- **症狀**: `newuidmap: write to uid_map failed: Operation not permitted` (setuid bit 在、CapEff 有 CAP_SETUID、NoNewPrivs=0 都正常,仍被拒)
+- **關鍵診斷**: `unshare -Ur true` (單行映射) 成功;newuidmap 寫**多行** subuid 映射失敗 — GHA 容器環境只放行 kernel 直接寫的單行映射
+- **修法**: 就是坑 4 的 sed 刪條目 — podman/buildah 無 subuid 條目時自動 fallback 單映射 (`Using rootless single mapping into the namespace`)
+
+**坑 6: 單映射下 pull/build 鏡像層 chown EINVAL — 根治 = scratch + 靜態 binary**
+- **症狀**: `While applying layer: potentially insufficient UIDs or GIDs available in user namespace (requested 0:42 for /etc/shadow): lchown ... invalid argument`
+- **根因**: 單映射只有一個 uid 可用,鏡像層內其他 uid/gid (如 alpine gid 42) 無法 chown。`ignore_chown_errors` 救不了: **vfs driver 根本不支援此選項** (直接報錯 `vfs driver does not support ignore_chown_errors`),且 TOML 值必須字串型 (裸 bool 會炸整份配置連帶其他測試陪葬)
+- **修法**: 樣本改 `FROM scratch` + `COPY --chmod=755` 靜態 binary (`gcc -static` 編、輸出同訊息) — 無 base layer = 無 chown 問題,這是無 subuid 環境 (HPC/受限 CI) 的標準 build 姿勢
+
+**坑 7: rootless storage.conf 必須指使用者可寫路徑**
+- **症狀**: `mkdir /var/lib/containers: permission denied`
+- **根因**: rootless podman 讀到配置裡**明確寫死**的 `graphroot=/var/lib/containers` 就不自動重定位到 `$HOME`
+- **修法**: home 份 `/home/toolbox/.config/containers/storage.conf` 指定 `runroot = "/run/user/1000/containers"`、`graphroot = "/home/toolbox/.local/share/containers/storage"` (/etc 份保留給 root 用)
+
+**坑 8: podman build 完 run 找不到鏡像**
+- **症狀**: `short-name "hello-..." did not resolve ... no unqualified-search registries`
+- **修法**: 鏡像名一律帶 `localhost/` 前綴 (podman build -t 的完整形式),run 就不會去 registry 撈
+
+**坑 9: rootlesskit 硬性要求 /etc/subuid — 容器內棄用,改 unshare**
+- **症狀**: `rootlesskit: failed to compute uid/gid map: No subuid ranges found for user 1001 ("toolbox")` — rootlesskit 沒有 podman 那種單映射 fallback (官方 README 明載 requires subuid,也無 --attach-userns/--uid-mapping 可用)
+- **修法**: buildkitd rootless 的真正前提只是「**mapped root in a user namespace**」— `unshare --user --map-root-user --mount` 直接達成;配 `--oci-worker-snapshotter native` (純 userspace,免掛 overlay,避開容器內 nested overlay);scratch 樣本無需網路,slirp4netns 整組免了。一輪就綠
 
 ### 通用
 - runner 的 `ubuntu-latest` (Ubuntu 24.04) 上,rootless 容器技術 (podman/nerdctl/rootlesskit) 全部都要先處理 AppArmor userns 限制,podman 是唯一內建處理好的 (04 直接過)
