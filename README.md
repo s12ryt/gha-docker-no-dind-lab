@@ -1,12 +1,12 @@
-# Docker-in-Docker 策略驗證場 — 不用 dind 的 8 種姿勢 + 要用 dind 的 5 種姿勢
+# GitHub Actions Docker 策略驗證場 — 沒有 dind 的 11 種姿勢 + dind 對照組 5 種
 
 > Repo: https://github.com/s12ryt/gha-docker-no-dind-lab
 > 所有 workflow 皆 `workflow_dispatch` 手動觸發、ubuntu-latest。
 
 ## 兩大系列
 
-- **Part 1 (01-08): 不用 Docker-in-Docker 也能用 Docker** — 原則: 絕不用 `docker:dind`
-- **Part 2 (09-13): 就是要用 Docker-in-Docker 時的正確姿勢** — dind service / TLS / container job / rootless / DooD
+- **主線 Part 1 (01-08 + 14-16, 共 11 個): 沒有 Docker-in-Docker 也能用 Docker + Docker 同類方案** — 原則: 絕不用 `docker:dind`;其中 14-16 更進一步在 **dockerd 停用** 狀態下實測 (buildah / skopeo / buildkit-daemonless),證明「沒有 docker 也能做 docker 的事」
+- **對照組 Part 2 (09-13, 附錄): 就是要用 Docker-in-Docker 時的正確姿勢** — dind service / TLS / container job / rootless / DooD
 
 ## 為什麼優先不要 Docker-in-Docker?
 
@@ -14,14 +14,14 @@
 - GitHub-hosted runner **本來就有完整的 host Docker daemon**,直接用即可
 - dind 有巢狀儲存層效能損耗、IPC/網路複雜、快取難共用等問題
 
-## 什麼時候「真的」需要 dind? (Part 2 存在的意義)
+## 什麼時候「真的」需要 dind? (對照組 Part 2 存在的意義)
 
 - 需要**完全隔離的 daemon 狀態** (build 之間互相污染、副作用測試)
 - 需要**測試 docker 本身**或編排 dind 叢集 (如 CI for docker tools)
 - 需要**可控的 daemon 版本/組態** (host daemon 不允許變更)
 - 非 root、不給 privileged 的環境 → **12 rootless dind** 是唯一解
 
-## Part 1 策略總覽 (01-08, 不用 dind)
+## Part 1 策略總覽 (01-08 + 14-16, 不用 dind / Docker 同類)
 
 | # | Workflow | 模式 | 需要 dockerd? | 需要 root? | 適用場景 |
 |---|----------|------|:---:|:---:|----------|
@@ -33,8 +33,11 @@
 | 06 | kaniko | 使用者空間建構 | 建構時 ❌ | ❌ | 受限環境建 image (只產 tar) |
 | 07 | nerdctl-rootful | containerd CLI | ❌ (用 containerd) | ✅ (sudo) | Docker 相容 CLI 直連 containerd |
 | 08 | nerdctl-rootless | rootless containerd | ❌ | ❌ | 最嚴格: 無 root 無 dockerd 全功能 |
+| 14 | buildah-rootless | daemonless 建構+執行 | ❌ (實測停用) | ❌ | 無 dockerd 的 Dockerfile build/run,產 docker-archive |
+| 15 | skopeo-daemonless | 鏡像複製/格式轉換 | ❌ (實測停用) | ❌ | pull/push/inspect,tar 互轉,連 build 都不需要 |
+| 16 | buildkit-daemonless | 一次性 buildkitd | ❌ (實測停用) | ❌ | 零常駐: rootless buildkitd 起→build→收,產 OCI tar |
 
-## Part 2 策略總覽 (09-13, 就是用 dind)
+## Part 2 策略總覽 (09-13, 對照組: 就是用 dind)
 
 | # | Workflow | 模式 | privileged? | TLS? | 隔離度 | 適用場景 |
 |---|----------|------|:---:|:---:|:---:|----------|
@@ -66,6 +69,15 @@ Kaniko 在容器內以使用者空間執行 Dockerfile 指令,不打包 daemon�
 
 ### 07/08 Nerdctl
 Docker 相容 CLI 直連 containerd。rootful 用系統 containerd (`sudo nerdctl`);rootless 需 `uidmap`+手動起 `containerd-rootless.sh` 與 rootlesskit 包的 `buildkitd` (Ubuntu 24.04 要先解 AppArmor,詳見踩坑紀錄)。
+
+### 14 Buildah (Rootless, Daemonless)
+`apt install buildah` 即得 Dockerfile 建構能力,無 daemon、無 root;`bud --isolation chroot` 在 runner 上最穩。本 workflow 實測**全程停用 dockerd** (`systemctl stop docker.service docker.socket` + `pgrep` 驗證),仍可 build → `buildah from`/`buildah run` 執行容器 → 匯出 `docker-archive:` tar 給 `docker load` 用。
+
+### 15 Skopeo (Daemonless 鏡像操作)
+不 build、只搬鏡像: `docker://` ↔ `dir:` ↔ `docker-archive:` ↔ `oci-archive:` 全格式互轉,全程無 daemon。實測在 dockerd 停用下直接從 registry 拉鏡像、inspect metadata、產出 `docker load` 可用的 tar。鏡像搬運/同步/離線分發的首選。
+
+### 16 BuildKit Daemonless (一次性 buildkitd)
+官方 buildkit tarball (`buildctl`+`buildkitd`) + apt 補 `rootlesskit`/`slirp4netns`,rootless 手動起 buildkitd → `buildctl build --output type=oci` → **trap 收掉 daemon,零常駐**。與 05 的差別: 05 依賴 host docker daemon 起 buildkitd 容器,16 完全不碰 docker。
 
 ### 09 DinD Service (No TLS)
 dind 當 `services:` sidecar,`DOCKER_TLS_CERTDIR: ''` 讓它聽 2375 無 TLS。job step 用 `DOCKER_HOST=tcp://127.0.0.1:2375` 操作「裡面的 docker」。**build 務必帶 retry** (原因見踩坑)。
@@ -99,13 +111,17 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 | 11 | dind-job-container | ✅ | 一次過 (GitLab 風格) |
 | 12 | dind-rootless | ✅ (修6輪) | named AppArmor + /dev/net/tun + TCP/TLS 三重解 |
 | 13 | dood-socket-mount | ✅ | 一次過 |
+| 14 | buildah-rootless | ✅ | 一次過;dockerd 停用下 build+run+匯出 docker-archive |
+| 15 | skopeo-daemonless | ✅ | 一次過;dockerd 停用下全格式轉換 |
+| 16 | buildkit-daemonless | ✅ (修2輪) | asset 檔名點號 + tarball 不含 rootlesskit 要 apt 補 |
 
 ## 推薦
 
 ### Part 1 (不需要 dind)
 - 一般 CI: **01**;要 DB: **01+02**;固定工具鏈: **03**
-- 安全/合規要求無 root 無 daemon: **04 或 08**
-- 大型多目標建構: **05**;受限環境建 image: **06**
+- 安全/合規要求無 root 無 daemon: **04 或 08**;無 dockerd 還要 build+run: **14**
+- 大型多目標建構: **05**;受限環境建 image: **06**;零常駐一次性建構: **16**
+- 只需搬鏡像/格式轉換 (連 build 都不用): **15**
 
 ### Part 2 (就是要 dind)
 - 預設: **09** (宣告式,簡單);要加密: **10**
@@ -171,9 +187,20 @@ GitLab 風格:job 跑在 `docker:cli` 容器,dind 當 service,`DOCKER_HOST=tcp:/
 - **根因**: docker:dind-rootless 官方 entrypoint 用 `--copy-up=/run`,socket 建在 rootlesskit child 的私有 mount ns;`docker exec` 的 process 掛在 parent ns,永遠看不到
 - **修法**: **改走 TCP 2376 + TLS** — rootlesskit 的 port mapping 在 parent ns 聽 2376,憑證在 `/certs` (overlay 共享層)。`docker exec` 內 `export DOCKER_HOST=tcp://localhost:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/certs/client`,第 2 次探測即通。驗 rootless 證據改用 `id` + `docker info --format '{{.SecurityOptions}}'` (顯示 `rootless`、`cgroupns`)
 
+### 16 buildkit-daemonless: 官方 tarball 的兩個安裝坑
+
+**坑 1: BuildKit release asset 檔名用「點號」分隔,不是連字號**
+- **症狀**: 從 `moby/buildkit` latest release 下載 `buildkit-vX.Y.Z-linux-amd64.tar.gz` (連字號) → 404
+- **修法**: 正確檔名是 `buildkit-v0.33.0.linux-amd64.tar.gz` — version 與 os-arch 之間是**點號**
+
+**坑 2: 官方 tarball 只含 buildctl/buildkitd,不含 rootlesskit/slirp4netns**
+- **症狀**: `rootlesskit: command not found`
+- **修法**: `sudo apt-get install -y rootlesskit slirp4netns` (Ubuntu 24.04 universe repo 有)。AppArmor profile 路徑要對準實際 binary: apt 裝的在 `/usr/bin/rootlesskit` → profile 名 `usr.bin.rootlesskit`;tarball 解到 `/usr/local/bin/buildkitd` → profile 名 `usr.local.bin.buildkitd`。socket 放 `$XDG_RUNTIME_DIR` 下、絕不 `--copy-up=/run` (同 08 坑 3)
+
 ### 通用
 - runner 的 `ubuntu-latest` (Ubuntu 24.04) 上,rootless 容器技術 (podman/nerdctl/rootlesskit) 全部都要先處理 AppArmor userns 限制,podman 是唯一內建處理好的 (04 直接過)
 - **dind 系列的鐵律**: 「探測成功」只是瞬間狀態,probe 和實際操作必須包在同一個 retry 迴圈;service 容器隨時可能被 runner 重建 (09)、daemon socket 可能被 rootlesskit 藏進私有 ns (08/12)
+- 14/15/16 的「停用 dockerd」step (`sudo systemctl stop docker.service docker.socket` + `pgrep dockerd` 確認已死) 是「**沒有 docker 也能做 docker 的事**」的鐵證模式,之後每個 step 都在無 daemon 狀態下完成,可直接抄
 - `actions/checkout@v4` 有 Node 20 deprecation 警告 (2026-09 起),純警告不影響執行
 
 ## 本地驗證
