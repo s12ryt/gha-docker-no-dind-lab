@@ -33,10 +33,14 @@ RUN curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDC
 # (rootless 用戶執行時,podman/buildah 會自動重定位到 $HOME 與 $XDG_RUNTIME_DIR,不受此設定影響)
 RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' > /etc/containers/storage.conf
 
-# rootless 專用非 root 帳號 (subuid/subgid 供 user namespace 映射)
-RUN useradd -m -s /bin/bash toolbox \
-    && echo 'toolbox:100000:65536' >> /etc/subuid \
-    && echo 'toolbox:100000:65536' >> /etc/subgid
+# rootless 專用非 root 帳號
+# 刻意「不」設定 subuid/subgid: 實測 GHA 容器內 setuid newuidmap 寫多行映射
+# 會被 kernel 拒絕 (EPERM,連 named AppArmor profile + seccomp/systempaths
+# unconfined 都解不掉;單行映射的 unshare -Ur 則是通的)。
+# rootless podman / rootlesskit 偵測不到 subuid 條目時,會自動 fallback
+# 「單映射模式」(single uid mapping 0->1001),自行寫 uid_map 不需 newuidmap,
+# 搭配 vfs storage 即可完整 build/run。
+RUN useradd -m -s /bin/bash toolbox
 
 # build 時期就把缺件擋下來
 RUN for t in docker podman buildah skopeo nerdctl buildctl buildkitd rootlesskit slirp4netns; do \
