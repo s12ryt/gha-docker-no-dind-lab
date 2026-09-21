@@ -26,20 +26,22 @@ jobs:
 
       - name: 解除 AppArmor 對 unprivileged userns 的限制 (Ubuntu 24.04)
         run: |
-          # runner 的 kernel.apparmor_restrict_unprivileged_userns=1 會擋 rootlesskit
-          # 依官方提示為 rootlesskit 寫 unconfined+userns profile
-          cat <<'EOT' | sudo tee /etc/apparmor.d/usr.local.bin.rootlesskit >/dev/null
+          # runner 的 kernel.apparmor_restrict_unprivileged_userns=1 會擋 rootlesskit 與 buildkitd
+          # 依官方提示為兩者寫 unconfined+userns profile
+          for BIN in rootlesskit buildkitd; do
+            cat <<EOT | sudo tee "/etc/apparmor.d/usr.local.bin.$BIN" >/dev/null
           abi <abi/4.0>,
           include <tunables/global>
 
-          /usr/local/bin/rootlesskit flags=(unconfined) {
+          /usr/local/bin/$BIN flags=(unconfined) {
             userns,
 
-            include if exists <local/usr.local.bin.rootlesskit>
+            include if exists <local/usr.local.bin.$BIN>
           }
           EOT
-          sudo systemctl restart apparmor.service 2>/dev/null || sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.rootlesskit || true
-          echo "apparmor profile 已套用"
+          done
+          sudo systemctl restart apparmor.service 2>/dev/null || sudo apparmor_parser -r -T /etc/apparmor.d || true
+          echo "apparmor profiles 已套用"
 
       - name: 手動啟動 rootless containerd (背景程序,非 systemd user 單元)
         run: |
@@ -65,6 +67,10 @@ jobs:
             fi
             sleep 2
           done
+          if ! buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers >/dev/null 2>&1; then
+            echo "buildkitd 未就緒,傾印日誌:"; cat /tmp/rootless-logs/buildkitd.log
+            exit 1
+          fi
           buildctl --addr "unix://$XDG_RUNTIME_DIR/buildkit/buildkitd.sock" debug workers | head -3
 
       - name: nerdctl run (rootless)
