@@ -40,23 +40,6 @@ jobs:
             echo "skopeo daemonless 通過"
           '
 
-      - name: 測試 2 — buildah (容器內 root,chroot isolation)
-        run: |
-          mkdir -p /tmp/buildah-out
-          docker run --rm --user root \
-            -v "$PWD/samples/hello:/src:ro" \
-            -v /tmp/buildah-out:/out \
-            no-dind-ubuntu:local bash -c '
-            set -e
-            buildah bud --isolation chroot -t hello-in-toolbox /src
-            CTR="$(buildah from hello-in-toolbox)"
-            buildah run --isolation chroot "$CTR" /usr/local/bin/hello.sh | grep -q "without Docker-in-Docker"
-            buildah rm "$CTR"
-            buildah push hello-in-toolbox docker-archive:/out/hello.tar:hello-in-toolbox:latest
-            ls -lh /out/hello.tar
-            echo "buildah 容器內 build+run+匯出 通過"
-          '
-
       - name: 解除 AppArmor userns 限制 + 準備 tun (供容器內 rootless)
         run: |
           sudo tee /etc/apparmor.d/no-dind-toolbox-userns >/dev/null <<'EOT'
@@ -73,6 +56,24 @@ jobs:
             || sudo systemctl restart apparmor 2>/dev/null || true
           if [ ! -e /dev/net/tun ]; then sudo mknod /dev/net/tun c 10 200; fi
           ls -l /dev/net/tun
+
+      - name: 測試 2 — buildah (容器內 root,chroot isolation)
+        run: |
+          mkdir -p /tmp/buildah-out
+          docker run --rm --user root \
+            --security-opt apparmor=no-dind-toolbox-userns \
+            -v "$PWD/samples/hello:/src:ro" \
+            -v /tmp/buildah-out:/out \
+            no-dind-ubuntu:local bash -c '
+            set -e
+            buildah bud --isolation chroot -t hello-in-toolbox /src
+            CTR="$(buildah from hello-in-toolbox)"
+            buildah run --isolation chroot "$CTR" /usr/local/bin/hello.sh | grep -q "without Docker-in-Docker"
+            buildah rm "$CTR"
+            buildah push hello-in-toolbox docker-archive:/out/hello.tar:hello-in-toolbox:latest
+            ls -lh /out/hello.tar
+            echo "buildah 容器內 build+run+匯出 通過"
+          '
 
       - name: 測試 3 — podman rootless (容器內非 root user namespace)
         run: |
