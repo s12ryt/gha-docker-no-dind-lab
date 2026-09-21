@@ -95,6 +95,7 @@ jobs:
           docker run --rm --user root \
             --security-opt apparmor=no-dind-toolbox-userns \
             --security-opt seccomp=unconfined \
+            --security-opt systempaths=unconfined \
             --device /dev/fuse --device /dev/net/tun \
             -v "$PWD/samples/hello:/src:ro" \
             -v /tmp/podman-test.sh:/test.sh:ro \
@@ -146,6 +147,7 @@ jobs:
           docker run --rm --user root \
             --security-opt apparmor=no-dind-toolbox-userns \
             --security-opt seccomp=unconfined \
+            --security-opt systempaths=unconfined \
             --device /dev/fuse --device /dev/net/tun \
             -v "$PWD/samples/hello:/src:ro" \
             -v /tmp/bk-test.sh:/test.sh:ro \
