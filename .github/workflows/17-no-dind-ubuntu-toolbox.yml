@@ -101,7 +101,7 @@ jobs:
             export XDG_RUNTIME_DIR=/run/user/1000
             echo "--- 生效中的 storage 配置 ---"
             podman info 2>/dev/null | grep -E "graphDriverName|configFile|runRoot|graphRoot|RunRoot|GraphRoot" || true
-            if ! podman build --storage-opt ignore_chown_errors=true -t localhost/hello-podman-in-toolbox /tmp/work/hello; then
+            if ! podman build -t localhost/hello-podman-in-toolbox /tmp/work/hello; then
               echo "--- podman build 失敗, 傾印配置診斷 ---"
               cat /etc/containers/storage.conf 2>/dev/null || echo "(no /etc/containers/storage.conf)"
               cat "$HOME/.config/containers/storage.conf" 2>/dev/null || echo "(no home storage.conf)"

@@ -30,15 +30,11 @@ RUN curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDC
 
 # 容器內最穩的 storage driver (不依賴 overlay 上層或 /dev/fuse)
 # runroot/graphroot 必須明寫: 覆蓋預設 storage.conf 後 buildah 會報 "runroot must be set"
-# (rootless 用戶執行時,podman/buildah 會自動重定位到 $HOME 與 $XDG_RUNTIME_DIR,不受此設定影響)
-# ignore_chown_errors: 單映射模式 (無 subuid) 下鏡像層內其他 uid/gid (如 gid 42)
-# 無法 chown 會炸 "lchown invalid argument" — 這是無 subuid 環境的官方解法 (HPC/無 root 場景)
-# 注意: 值必須是「帶引號的字串」"true" — 實測裸 bool 會炸 TOML 類型
-# (incompatible types: TOML value has type bool; destination has type string)
-# 導致整份配置失效連帶其他選項全丟。另實測此選項在 Ubuntu 24.04 的
-# containers/storage 對 pull/build 容器初始化路徑壓不住 chown EINVAL —
-# 單映射下的根治解是 scratch + 靜態 binary 樣本 (見 samples/hello-scratch)
-RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
+# (rootless 用戶執行時讀 home 份配置,見下方 useradd 段)
+# 注意: 不要加 ignore_chown_errors — 實測 "vfs driver does not support
+# ignore_chown_errors options" (此選項僅 overlay 類 driver 支援);
+# 單映射模式的 chown 問題靠 scratch + 靜態 binary 樣本根治 (samples/hello-scratch)
+RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' > /etc/containers/storage.conf
 
 # rootless 專用非 root 帳號
 # 刻意「不」設定 subuid/subgid: 實測 GHA 容器內 setuid newuidmap 寫多行映射
@@ -54,11 +50,12 @@ RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/r
 # graphroot/runroot 必須指到 toolbox 可寫的路徑 — 實測若沿用 /etc 份的
 # /var/lib/containers 會炸 "mkdir /var/lib/containers: permission denied"
 # (rootless 讀到明確寫死的 graphroot 就不會自動重定位到 $HOME)。
+# 同樣不加 ignore_chown_errors (vfs 不支援,加了直接炸 driver 驗證)。
 RUN useradd -m -s /bin/bash toolbox \
     && sed -i '/^toolbox:/d' /etc/subuid /etc/subgid \
     && ! grep -q '^toolbox:' /etc/subuid /etc/subgid \
     && mkdir -p /home/toolbox/.config/containers /home/toolbox/.local/share/containers/storage \
-    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/user/1000/containers"\ngraphroot = "/home/toolbox/.local/share/containers/storage"\n\n[storage.options]\nignore_chown_errors = "true"\n' > /home/toolbox/.config/containers/storage.conf \
+    && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/user/1000/containers"\ngraphroot = "/home/toolbox/.local/share/containers/storage"\n' > /home/toolbox/.config/containers/storage.conf \
     && chown -R toolbox:toolbox /home/toolbox/.config /home/toolbox/.local \
     && echo 'toolbox subuid/subgid entries removed (single-mapping mode)'
 
