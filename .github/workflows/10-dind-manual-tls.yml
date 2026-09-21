@@ -1,0 +1,60 @@
+name: 10 DinD Manual with TLS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dind-manual-tls:
+    name: Manually started DinD container with TLS on 2376
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start DinD with DOCKER_TLS_CERTDIR and wait for readiness
+        run: |
+          mkdir -p /tmp/dind-certs
+          docker run -d --name dind-tls \
+            --privileged \
+            -p 2376:2376 \
+            -v /tmp/dind-certs:/certs \
+            -e DOCKER_TLS_CERTDIR=/certs \
+            docker:dind
+
+          dind() {
+            docker --tlsverify \
+              --tlscacert=/tmp/dind-certs/client/ca.pem \
+              --tlscert=/tmp/dind-certs/client/cert.pem \
+              --tlskey=/tmp/dind-certs/client/key.pem \
+              -H tcp://localhost:2376 \
+              "$@"
+          }
+
+          echo "Waiting for TLS-secured DinD daemon on tcp://localhost:2376 ..."
+          READY=0
+          for i in $(seq 1 30); do
+            if dind version >/dev/null 2>&1; then
+              READY=1
+              echo "TLS DinD is ready (attempt $i)"
+              break
+            fi
+            echo "  ... attempt $i/30, retry in 2s"
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "TLS DinD did not become ready in time; dumping logs:"
+            docker logs dind-tls || true
+            exit 1
+          fi
+          echo "=== TLS DinD daemon info ==="
+          dind info --format 'Name={{.Name}}  Server={{.ServerVersion}}'
+
+      - name: Build and run inside TLS DinD
+        run: |
+          export DOCKER_TLS_VERIFY=1
+          export DOCKER_CERT_PATH=/tmp/dind-certs/client
+          export DOCKER_HOST=tcp://localhost:2376
+          docker build -t hello-dind samples/hello-dind
+          OUT=$(docker run --rm hello-dind)
+          echo "Output: $OUT"
+          echo "$OUT" | grep -q "inside Docker-in-Docker"

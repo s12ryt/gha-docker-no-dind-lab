@@ -1,0 +1,56 @@
+name: 11 DinD Job Container (GitLab style)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dind-job-container:
+    name: Job runs inside docker:cli container, DinD as service
+    runs-on: ubuntu-latest
+    container:
+      image: docker:cli
+    services:
+      docker:
+        image: docker:dind
+        env:
+          DOCKER_TLS_CERTDIR: ''
+        options: --privileged
+    steps:
+      - name: Build and run inside DinD
+        run: |
+          export DOCKER_HOST=tcp://docker:2375
+          echo "Waiting for DinD daemon at ${DOCKER_HOST} ..."
+          READY=0
+          for i in $(seq 1 30); do
+            if docker version >/dev/null 2>&1; then
+              READY=1
+              echo "DinD ready (attempt $i)"
+              break
+            fi
+            echo "  ... attempt $i/30, retry in 2s"
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "DinD did not become ready in time"
+            exit 1
+          fi
+
+          echo "=== Job container OS (should be Alpine) ==="
+          grep PRETTY_NAME /etc/os-release
+          echo "=== DinD daemon info ==="
+          docker info --format 'Name={{.Name}}  Server={{.ServerVersion}}'
+
+          mkdir -p /tmp/build
+          cd /tmp/build
+          cat > Dockerfile <<'EOT'
+          FROM alpine:3.20
+          COPY hello.sh /usr/local/bin/hello.sh
+          RUN chmod +x /usr/local/bin/hello.sh
+          ENTRYPOINT ["/usr/local/bin/hello.sh"]
+          EOT
+          printf '%s\n' '#!/bin/sh' 'echo "hello from container built inside Docker-in-Docker"' > hello.sh
+
+          docker build -t hello-dind .
+          OUT=$(docker run --rm hello-dind)
+          echo "Output: $OUT"
+          echo "$OUT" | grep -q "inside Docker-in-Docker"

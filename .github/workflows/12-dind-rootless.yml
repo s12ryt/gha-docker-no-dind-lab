@@ -1,0 +1,48 @@
+name: 12 DinD Rootless (no privileged)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dind-rootless:
+    name: docker:dind-rootless without the privileged flag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start rootless DinD and wait for readiness
+        run: |
+          OPTS="--security-opt apparmor=unconfined"
+          if [ -e /dev/fuse ]; then
+            OPTS="$OPTS --device /dev/fuse"
+          fi
+          echo "Starting dind-rootless with: $OPTS"
+          docker run -d --name dind-rootless $OPTS docker:dind-rootless
+
+          echo "Waiting for rootless dockerd (docker exec) ..."
+          READY=0
+          for i in $(seq 1 30); do
+            if docker exec dind-rootless docker version >/dev/null 2>&1; then
+              READY=1
+              echo "rootless DinD ready (attempt $i)"
+              break
+            fi
+            echo "  ... attempt $i/30, retry in 2s"
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "rootless DinD did not become ready in time; dumping logs:"
+            docker logs dind-rootless || true
+            exit 1
+          fi
+          echo "=== Proof: dockerd runs as non-root user inside the container ==="
+          docker exec dind-rootless sh -c 'ps | grep [d]ockerd | head -3'
+
+      - name: Build and run inside rootless DinD
+        run: |
+          docker cp samples/hello-dind dind-rootless:/tmp/build
+          docker exec dind-rootless sh -c 'docker build -t hello-dind /tmp/build'
+          OUT=$(docker exec dind-rootless sh -c 'docker run --rm hello-dind')
+          echo "Output: $OUT"
+          echo "$OUT" | grep -q "inside Docker-in-Docker"

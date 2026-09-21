@@ -1,0 +1,33 @@
+name: 13 DooD Socket Mount (sibling containers)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dood-socket-mount:
+    name: Mount host docker.sock into docker:cli (Docker-out-of-Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build via socket-mounted docker:cli container
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/samples/hello:/build" \
+            -w /build \
+            docker:cli \
+            docker build -t hello-dood .
+
+      - name: Verify image exists on host daemon and runs
+        run: |
+          IMG=$(docker images -q hello-dood)
+          if [ -z "$IMG" ]; then
+            echo "ERROR: hello-dood not found on host daemon"
+            exit 1
+          fi
+          echo "hello-dood image id on HOST daemon: $IMG"
+          OUT=$(docker run --rm hello-dood)
+          echo "Output: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"

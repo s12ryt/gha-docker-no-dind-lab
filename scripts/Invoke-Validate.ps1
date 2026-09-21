@@ -4,7 +4,10 @@
 #   2. yamllint 風格檢查 (有 python 就用,失敗可 -SkipYamllint)
 #   3. actionlint 靜態檢查 (自動下載 binary 到 .tools/)
 #   4. 專案自訂規則: 每個 workflow 必須有 name/on/workflow_dispatch/jobs;
-#      禁止 docker:dind;禁止 --privileged;必須 runs-on: ubuntu-latest
+#      Part 1 (01-08) 與 13 (DooD): 禁止 docker:dind、禁止 --privileged
+#      Part 2 DinD 系列 (09-12): 刻意使用 docker:dind,必須出現 docker:dind;
+#        --privileged 允許 (12 rootless 變體可不含)
+#      必須 runs-on: ubuntu-latest
 [CmdletBinding()]
 param(
     [switch]$SkipYamllint,
@@ -80,9 +83,18 @@ foreach ($f in $files) {
     } else {
         Add-Failure "$($f.Name): 無法解析 YAML 結構做規則檢查"
     }
-    # 禁用規則 (純文字掃描,最可靠)
-    if ($raw -match 'docker:dind') { Add-Failure "$($f.Name): 偵測到 docker:dind (禁用)" } else { Add-Ok "$($f.Name): 無 docker:dind" }
-    if ($raw -match '--privileged') { Add-Failure "$($f.Name): 偵測到 --privileged (禁用)" } else { Add-Ok "$($f.Name): 無 --privileged" }
+    # dind 使用規則 (純文字掃描,最可靠)
+    # Part 1 (01-08) + 13 (DooD) 嚴格禁用;Part 2 (09-12) 刻意示範 DinD,必須用 docker:dind
+    $isDindSeries = $f.Name -match '^(09|10|11|12)-'
+    if ($isDindSeries) {
+        if ($raw -match 'docker:dind') { Add-Ok "$($f.Name): DinD 系列 - docker:dind 存在 (預期)" }
+        else { Add-Failure "$($f.Name): DinD 系列必須使用 docker:dind" }
+        if ($raw -match '--privileged') { Add-Ok "$($f.Name): DinD 系列 - --privileged 存在" }
+        else { Add-Ok "$($f.Name): DinD 系列 - 無 --privileged (rootless 變體,允許)" }
+    } else {
+        if ($raw -match 'docker:dind') { Add-Failure "$($f.Name): 偵測到 docker:dind (禁用)" } else { Add-Ok "$($f.Name): 無 docker:dind" }
+        if ($raw -match '--privileged') { Add-Failure "$($f.Name): 偵測到 --privileged (禁用)" } else { Add-Ok "$($f.Name): 無 --privileged" }
+    }
 }
 
 Write-Host "`n=== 3. yamllint 風格檢查 ===" -ForegroundColor Cyan
