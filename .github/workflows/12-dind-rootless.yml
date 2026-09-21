@@ -71,13 +71,17 @@ jobs:
 
           echo "Waiting for rootless dockerd (docker exec) ..."
           READY=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if docker exec dind-rootless docker version >/dev/null 2>&1; then
               READY=1
               echo "rootless DinD ready (attempt $i)"
               break
             fi
-            echo "  ... attempt $i/30, retry in 2s"
+            REMAINDER=$((i % 15))
+            if [ "$REMAINDER" = "0" ]; then
+              echo "  ... attempt $i/90 still not ready; last daemon log lines:"
+              docker logs dind-rootless 2>&1 | tail -n 3
+            fi
             sleep 2
           done
           if [ "$READY" != "1" ]; then
