@@ -37,10 +37,16 @@ RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/r
 # 刻意「不」設定 subuid/subgid: 實測 GHA 容器內 setuid newuidmap 寫多行映射
 # 會被 kernel 拒絕 (EPERM,連 named AppArmor profile + seccomp/systempaths
 # unconfined 都解不掉;單行映射的 unshare -Ur 則是通的)。
-# rootless podman / rootlesskit 偵測不到 subuid 條目時,會自動 fallback
-# 「單映射模式」(single uid mapping 0->1001),自行寫 uid_map 不需 newuidmap,
-# 搭配 vfs storage 即可完整 build/run。
-RUN useradd -m -s /bin/bash toolbox
+# 注意: Ubuntu 的 useradd 會依 /etc/login.defs (SUB_UID_MIN..MAX) 「自動」
+# 分配 subuid/subgid 條目 (實測被配到 165536:65536) — 光不手動 echo 沒用,
+# 必須在 useradd 後 sed 刪除,否則 podman 偵測到條目就走 newuidmap 多行映射 → EPERM。
+# 刪光條目後 rootless podman / rootlesskit 會自動 fallback「單映射模式」
+# (single uid mapping 0->1001),自行寫 uid_map 不需 newuidmap,搭配 vfs
+# storage 即可完整 build/run。
+RUN useradd -m -s /bin/bash toolbox \
+    && sed -i '/^toolbox:/d' /etc/subuid /etc/subgid \
+    && ! grep -q '^toolbox:' /etc/subuid /etc/subgid \
+    && echo 'toolbox subuid/subgid entries removed (single-mapping mode)'
 
 # build 時期就把缺件擋下來
 RUN for t in docker podman buildah skopeo nerdctl buildctl buildkitd rootlesskit slirp4netns; do \
