@@ -1,0 +1,52 @@
+name: 15 Skopeo Daemonless
+
+on:
+  workflow_dispatch:
+
+jobs:
+  skopeo-daemonless:
+    name: Skopeo (dockerd 停用狀態下鏡像拉取/轉換/檢查)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安裝 Skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo >/dev/null
+          skopeo --version
+
+      - name: 停用 host Docker daemon (鐵證—接下來全程沒有 dockerd)
+        run: |
+          sudo systemctl stop docker.service docker.socket 2>/dev/null || true
+          sleep 2
+          if pgrep -x dockerd >/dev/null 2>&1; then
+            echo "dockerd 還在跑,停用失敗"; exit 1
+          fi
+          echo "確認: dockerd 已停用,本 job 接下來完全沒有 Docker daemon"
+
+      - name: Skopeo copy docker:// → dir (無 daemon 直接從 registry 拉鏡像)
+        run: |
+          skopeo copy docker://alpine:3.20 dir:/tmp/alpine-dir
+          ls /tmp/alpine-dir | head -5
+
+      - name: Skopeo inspect dir (檢查鏡像 metadata)
+        run: |
+          skopeo inspect dir:/tmp/alpine-dir | head -12
+
+      - name: Skopeo copy dir → docker-archive (產出 docker load 可用的 tar)
+        run: |
+          skopeo copy dir:/tmp/alpine-dir docker-archive:/tmp/alpine-docker.tar:alpine:3.20
+          ls -lh /tmp/alpine-docker.tar
+
+      - name: Skopeo copy docker-archive → oci-archive (格式互轉)
+        run: |
+          skopeo copy docker-archive:/tmp/alpine-docker.tar oci-archive:/tmp/alpine-oci.tar
+          skopeo inspect oci-archive:/tmp/alpine-oci.tar | grep -E '"Env"|"Os"' | head -3
+
+      - name: 驗證產物 + 總結
+        run: |
+          echo "三種產物:"
+          ls -lh /tmp/alpine-dir /tmp/alpine-docker.tar /tmp/alpine-oci.tar 2>/dev/null | head -8
+          if pgrep -x dockerd >/dev/null 2>&1; then
+            echo "異常: dockerd 又跑起來了"; exit 1
+          fi
+          echo "總結: pull → 檢查 → 轉 docker-archive/oci-archive 全程 dockerd 停用"

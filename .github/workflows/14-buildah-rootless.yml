@@ -1,0 +1,54 @@
+name: 14 Buildah Rootless
+
+on:
+  workflow_dispatch:
+
+jobs:
+  buildah-rootless:
+    name: Buildah rootless (dockerd 停用狀態下 build/run/匯出)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安裝 Buildah
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq buildah >/dev/null
+          buildah --version
+
+      - name: 停用 host Docker daemon (鐵證—接下來全程沒有 dockerd)
+        run: |
+          sudo systemctl stop docker.service docker.socket 2>/dev/null || true
+          sleep 2
+          if pgrep -x dockerd >/dev/null 2>&1; then
+            echo "dockerd 還在跑,停用失敗"; exit 1
+          fi
+          echo "確認: dockerd 已停用,本 job 接下來完全沒有 Docker daemon"
+
+      - name: Buildah bud (rootless、無 daemon)
+        run: |
+          # --isolation chroot: 不需要 OCI runtime,直接 chroot 執行 Dockerfile 指令
+          buildah bud --isolation chroot -t hello-buildah samples/hello
+          buildah images | head -5
+
+      - name: Buildah run + 驗證
+        run: |
+          CTR="$(buildah from hello-buildah)"
+          OUT="$(buildah run --isolation chroot "$CTR" /usr/local/bin/hello.sh)"
+          buildah rm "$CTR"
+          echo "輸出: $OUT"
+          echo "$OUT" | grep -q "without Docker-in-Docker"
+
+      - name: Buildah push 匯出 docker-archive (無 daemon 產出 docker 可用 tar)
+        run: |
+          buildah push hello-buildah docker-archive:/tmp/hello-buildah.tar:hello-buildah
+          ls -lh /tmp/hello-buildah.tar
+          tar -tf /tmp/hello-buildah.tar | head -5
+
+      - name: 確認全程無 dockerd、無 dind
+        run: |
+          if pgrep -x dockerd >/dev/null 2>&1; then
+            echo "異常: dockerd 又跑起來了"; exit 1
+          fi
+          echo "總結: build → run → 匯出 全程 dockerd 停用,buildah 獨立完成"

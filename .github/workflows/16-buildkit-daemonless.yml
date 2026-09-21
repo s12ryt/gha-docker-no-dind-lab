@@ -1,0 +1,98 @@
+name: 16 BuildKit Daemonless Rootless
+
+on:
+  workflow_dispatch:
+
+jobs:
+  buildkit-daemonless:
+    name: 一次性 rootless buildkitd (build 完自動收掉,常駐為零)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安裝 BuildKit (buildctl + buildkitd)
+        run: |
+          VER="$(curl -fsSL https://api.github.com/repos/moby/buildkit/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')"
+          echo "BuildKit 版本: $VER"
+          curl -fsSL "https://github.com/moby/buildkit/releases/download/${VER}/buildkit-${VER}-linux-amd64.tar.gz" -o /tmp/buildkit.tgz
+          sudo tar -xzf /tmp/buildkit.tgz -C /usr/local
+          buildctl --version
+          buildkitd --version
+
+      - name: 解除 AppArmor 對 unprivileged userns 的限制 (Ubuntu 24.04)
+        run: |
+          # 同 08: runner 的 kernel.apparmor_restrict_unprivileged_userns=1
+          # 會擋 rootlesskit 與 buildkitd,為兩者寫 unconfined+userns profile
+          for BIN in rootlesskit buildkitd; do
+            cat <<EOT | sudo tee "/etc/apparmor.d/usr.local.bin.$BIN" >/dev/null
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          /usr/local/bin/$BIN flags=(unconfined) {
+            userns,
+
+            include if exists <local/usr.local.bin.$BIN>
+          }
+          EOT
+          done
+          sudo systemctl restart apparmor.service 2>/dev/null || sudo apparmor_parser -r -T /etc/apparmor.d || true
+          echo "apparmor profiles 已套用"
+
+      - name: 一次性 buildkitd — 起、build、自動收掉 (daemonless 核心)
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          BK_ROOT="$XDG_RUNTIME_DIR/buildkit-daemonless"
+          BK_ADDR="unix://$BK_ROOT/buildkitd.sock"
+          mkdir -p "$BK_ROOT" /tmp/bk-logs
+
+          # 關鍵 (同 08 坑3): 絕不加 --copy-up=/run,socket 必須在 host 真實路徑
+          rootlesskit \
+            --state-dir="$XDG_RUNTIME_DIR/rootlesskit-daemonless" \
+            --net=slirp4netns \
+            --disable-host-loopback \
+            --copy-up=/etc \
+            buildkitd \
+              --root "$BK_ROOT" \
+              --addr "$BK_ADDR" \
+              --oci-worker-no-process-sandbox > /tmp/bk-logs/buildkitd.log 2>&1 &
+          BKPID=$!
+          cleanup() {
+            kill "$BKPID" 2>/dev/null || true
+            wait "$BKPID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          # 等待就緒
+          READY=0
+          for i in $(seq 1 30); do
+            if buildctl --addr "$BK_ADDR" debug workers >/dev/null 2>&1; then READY=1; break; fi
+            sleep 2
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "buildkitd 未就緒,傾印日誌:"; cat /tmp/bk-logs/buildkitd.log; exit 1
+          fi
+          buildctl --addr "$BK_ADDR" debug workers | head -3
+
+          # build: 輸出 OCI archive (無需任何 docker daemon)
+          buildctl --addr "$BK_ADDR" build \
+            --frontend dockerfile.v0 \
+            --local context=samples/hello \
+            --local dockerfile=samples/hello \
+            --output type=oci,dest=/tmp/hello-daemonless.tar
+          ls -lh /tmp/hello-daemonless.tar
+
+      - name: 驗證產物 (OCI layout + config)
+        run: |
+          sudo apt-get install -y -qq skopeo >/dev/null
+          # oci-archive 裡有我們 Dockerfile 的 LABEL,證明真的是 samples/hello 建出來的
+          skopeo inspect oci-archive:/tmp/hello-daemonless.tar | grep -A2 '"Labels"' | head -4
+          skopeo inspect oci-archive:/tmp/hello-daemonless.tar | grep -q "hello-no-dind" && echo "LABEL 驗證通過"
+
+      - name: 確認 buildkitd 已收掉 (daemonless 零常駐)
+        run: |
+          sleep 1
+          if pgrep -x buildkitd >/dev/null 2>&1; then
+            echo "異常: buildkitd 還在跑 (daemonless 失敗)"; pkill -x buildkitd || true; exit 1
+          fi
+          echo "確認: buildkitd 已自動收掉,全程無 daemon 常駐、無 dind 映像、無特權容器"
